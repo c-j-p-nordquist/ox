@@ -15,7 +15,7 @@ use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 
 use super::regime::Series;
-use super::zones::{Calibration, Zone, WARMUP};
+use super::zones::{Calibration, Side, Zone, WARMUP};
 use crate::model::Bar;
 
 /// Zone strength needed to anchor an entry, stop or target.
@@ -578,10 +578,14 @@ pub fn edge_source(bt: &Backtest, has_edge: bool) -> String {
 }
 
 /// Qualifying zones behind price (support for a long), nearest first.
+/// Qualifying zones on the trade's side of price (support for longs, resistance for shorts) within
+/// 4 ATR, nearest first. A zone's strength is measured for its side, so a support zone just under
+/// price is never a short's entry, and vice versa.
 fn behind<'a>(ctx: &'a Ctx, d: f64) -> Vec<&'a Zone> {
     let (a, spot) = (ctx.atr, ctx.spot);
+    let side = if d > 0.0 { Side::Support } else { Side::Resistance };
     let mut v: Vec<&Zone> =
-        qualifying(ctx.zones).filter(|z| (-0.1 * a..=4.0 * a).contains(&(d * (spot - z.price)))).collect();
+        qualifying(ctx.zones).filter(|z| z.side == side && d * (spot - z.price) <= 4.0 * a).collect();
     v.sort_by(|x, y| (d * (spot - x.price)).total_cmp(&(d * (spot - y.price))));
     v
 }
@@ -788,6 +792,24 @@ mod tests {
                 Bar { t: i as i64 * 86_400, o, h: o.max(c) + 0.5, l: o.min(c) - 0.5, c, v: 1.0 }
             })
             .collect()
+    }
+
+    fn zone(price: f64, side: Side) -> Zone {
+        Zone { price, low: price - 0.1, high: price + 0.1, side, strength: 1.0, tested_strength: 1.0, sources: vec![] }
+    }
+
+    #[test]
+    fn entries_only_use_zones_on_their_side() {
+        // A support zone 0.02 ATR under price must not become the short's resistance entry.
+        let b = bars(&[100.0; 5]);
+        let series = Series::new(&b);
+        let cal = Calibration { stats: Default::default(), daily_zones: vec![] };
+        let zones = vec![zone(99.98, Side::Support), zone(103.0, Side::Resistance), zone(96.0, Side::Support)];
+        let ctx = Ctx { series: &series, cal: &cal, zones: &zones, spot: 100.0, atr: 1.0, events: &[] };
+        let long: Vec<f64> = behind(&ctx, 1.0).iter().map(|z| z.price).collect();
+        let short: Vec<f64> = behind(&ctx, -1.0).iter().map(|z| z.price).collect();
+        assert_eq!(long, vec![99.98, 96.0]);
+        assert_eq!(short, vec![103.0]);
     }
 
     #[test]
