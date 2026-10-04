@@ -1,0 +1,227 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pre-Market Brief</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg: #F4F6F8; --surface: #FFFFFF; --ink: #141A21; --muted: #5A6573; --line: #DCE1E7;
+  --accent: #0B7285; --accent-soft: #D7ECEF;
+  --up: #16794A; --up-soft: #DDF1E6; --down: #C0392B; --down-soft: #F8E1DE; --warn: #A86A0A; --warn-soft: #F7EBD3;
+  --band: #D9E6EA;
+  --display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0E1217; --surface: #151B22; --ink: #E4E9EF; --muted: #8B96A5; --line: #242C36;
+    --accent: #45B5C4; --accent-soft: #15333A;
+    --up: #45C07F; --up-soft: #133224; --down: #F0716A; --down-soft: #3A1D1C; --warn: #E3A43E; --warn-soft: #3A2C14;
+    --band: #1E3940;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0E1217; --surface: #151B22; --ink: #E4E9EF; --muted: #8B96A5; --line: #242C36;
+  --accent: #45B5C4; --accent-soft: #15333A;
+  --up: #45C07F; --up-soft: #133224; --down: #F0716A; --down-soft: #3A1D1C; --warn: #E3A43E; --warn-soft: #3A2C14;
+  --band: #1E3940;
+}
+body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--body); padding-inline: 16px; padding-block: 20px 40px; }
+main { max-width: 760px; margin: 0 auto; display: grid; gap: 28px; }
+h1, h2 { font-family: var(--display); margin: 0; text-wrap: balance; }
+h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.1; }
+h2 { font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+.up { color: var(--up); } .down { color: var(--down); } .warn { color: var(--warn); }
+header { display: grid; gap: 6px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 13px; }
+.session { font-family: var(--display); font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.06em; }
+section { display: grid; gap: 12px; }
+.read { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: grid; gap: 8px; }
+.read p, .read ul { margin: 0; max-width: 65ch; }
+.read ul { padding-left: 18px; display: grid; gap: 4px; }
+.tape { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.tick { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; gap: 2px; }
+.tick .sym { font-family: var(--display); font-weight: 700; font-size: 15px; }
+.tick .px { font-size: 20px; }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.pill { font-size: 13px; padding: 4px 10px; border-radius: 999px; line-height: 1.35; }
+.pill.off { background: var(--down-soft); color: var(--down); }
+.pill.on { background: var(--up-soft); color: var(--up); }
+.flags { display: grid; gap: 8px; }
+.flag { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: baseline; padding: 10px 12px; border-radius: 8px; background: var(--surface); border-left: 3px solid var(--line); }
+.flag.high { border-left-color: var(--down); } .flag.warn { border-left-color: var(--warn); }
+.sev { font-family: var(--display); font-weight: 700; font-size: 12px; letter-spacing: 0.06em; }
+.flag.high .sev { color: var(--down); } .flag.warn .sev { color: var(--warn); }
+.flag.ok { border-left-color: var(--up); } .flag.ok .sev { color: var(--up); }
+.flag b { font-family: var(--display); font-weight: 600; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px 18px; }
+.stat { display: grid; gap: 0; }
+.stat .k { font-size: 12px; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+.stat .v { font-size: 17px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-family: var(--mono); font-size: 13px; padding: 3px 9px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line); }
+.list { display: grid; gap: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.row { display: grid; gap: 6px; padding: 12px 14px; border-top: 1px solid var(--line); }
+.row:first-child { border-top: 0; }
+.row-top { display: grid; grid-template-columns: minmax(58px, auto) 1fr auto; gap: 10px; align-items: baseline; }
+.row .sym { font-family: var(--display); font-weight: 700; font-size: 17px; }
+.row .px { text-align: right; }
+.move { font-family: var(--mono); font-size: 13px; padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+.move.up { background: var(--up-soft); } .move.down { background: var(--down-soft); }
+.tag { font-size: 11px; font-family: var(--display); font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--accent); margin-left: 6px; }
+.tag.earn { color: var(--warn); }
+.ladder { position: relative; height: 22px; margin: 2px 4px 0; }
+.ladder .rail { position: absolute; left: 0; right: 0; top: 10px; height: 2px; background: var(--line); }
+.ladder .band { position: absolute; top: 6px; height: 10px; background: var(--band); border-radius: 3px; }
+.ladder .lv { position: absolute; top: 3px; width: 2px; height: 16px; border-radius: 1px; }
+.ladder .lv.s { background: var(--up); } .ladder .lv.r { background: var(--down); }
+.ladder .dot { position: absolute; top: 5px; width: 12px; height: 12px; border-radius: 50%; background: var(--ink); border: 2px solid var(--surface); transform: translateX(-50%); }
+.detail { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 13px; color: var(--muted); }
+.detail .num { color: var(--ink); }
+.src { font-size: 12px; color: var(--muted); }
+footer { font-size: 12px; color: var(--muted); display: grid; gap: 4px; }
+@media (prefers-reduced-motion: no-preference) { .row { transition: background-color .15s; } }
+</style>
+
+<main id="app"></main>
+
+<script id="brief-data" type="application/json">/*BRIEF_JSON*/</script>
+<script>
+(function () {
+  const b = JSON.parse(document.getElementById("brief-data").textContent);
+  const app = document.getElementById("app");
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const px = (x) => x == null ? "–" : (Math.abs(x) >= 10000 ? x.toFixed(0) : x.toFixed(2));
+  const pct = (x, d = 2) => x == null ? "–" : (x > 0 ? "+" : "") + x.toFixed(d) + "%";
+  const cls = (x) => x == null ? "" : x >= 0 ? "up" : "down";
+  const big = (x) => { const a = Math.abs(x); const s = x < 0 ? "-" : "+";
+    return a >= 1e6 ? s + (a / 1e6).toFixed(1) + "M" : a >= 1e3 ? s + (a / 1e3).toFixed(1) + "K" : s + a.toFixed(0); };
+  const sessionName = { pre: "Pre-market", regular: "Market open", post: "After-hours", closed: "Market closed" };
+  const when = new Date(b.generated_at * 1000);
+  const time = (tz) => when.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: tz });
+  const out = [];
+
+  out.push(`<header>
+    <span class="session">${esc(sessionName[b.session] || b.session)}</span>
+    <h1>Brief for ${new Date(b.date + "T12:00:00Z").toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}</h1>
+    <div class="meta"><span>Generated ${time("America/New_York")} New York · ${time("Europe/Stockholm")} Stockholm</span><span>Delayed option data; quotes marked rt are real-time</span></div>
+  </header>`);
+
+  if (b.notes) {
+    const blocks = b.notes.trim().split(/\n\s*\n/).map((blk) => {
+      const lines = blk.split("\n");
+      if (lines.every((l) => /^\s*[-*] /.test(l))) return "<ul>" + lines.map((l) => "<li>" + esc(l.replace(/^\s*[-*] /, "")) + "</li>").join("") + "</ul>";
+      return "<p>" + esc(blk) + "</p>";
+    });
+    out.push(`<section><h2>The read</h2><div class="read">${blocks.join("")}</div></section>`);
+  }
+
+  const bySym = Object.fromEntries(b.symbols.map((s) => [s.symbol, s]));
+  const m = b.market;
+  const idx = b.symbols.filter((s) => s.group === "index");
+  const tape = idx.map((s) => `<div class="tick"><span class="sym">${esc(s.symbol)}</span>
+      <span class="px num">${px(s.price)}</span><span class="num ${cls(s.change_pct)}">${pct(s.change_pct)}</span></div>`);
+  if (m && m.vix != null) tape.push(`<div class="tick"><span class="sym">VIX</span><span class="px num">${m.vix.toFixed(1)}</span><span class="num ${cls(-(m.vix_change_pct ?? 0))}">${pct(m.vix_change_pct, 1)}</span></div>`);
+  let backdrop = `<div class="tape">${tape.join("")}</div>`;
+  if (m) backdrop += `<div class="pills">${m.risk_off.map((f) => `<span class="pill off">${esc(f)}</span>`).join("")}${m.risk_on.map((f) => `<span class="pill on">${esc(f)}</span>`).join("")}</div>`;
+  out.push(`<section><h2>Backdrop</h2>${backdrop}</section>`);
+
+  const r = b.risk;
+  if (r) {
+    const flags = r.flags.filter((f) => f.severity !== "info");
+    const br = r.book_risk, bu = r.budget, d = r.directional;
+    const stats = [];
+    if (br) stats.push(["Typical day", `±$${br.daily_sigma.toFixed(0)}${br.daily_sigma_pct != null ? " · " + br.daily_sigma_pct.toFixed(1) + "%" : ""}`]);
+    if (br) stats.push([`Explained by ${esc(br.benchmark)}`, (br.market_share * 100).toFixed(0) + "%"]);
+    if (d && d.call_share != null) stats.push(["Long premium in calls", (d.call_share * 100).toFixed(0) + "%"]);
+    const th = r.totals.theta_day;
+    stats.push(["Theta / day", `${th < 0 ? "−" : "+"}$${Math.abs(th).toFixed(0)}`]);
+    if (bu) stats.push(["Cash / buffer", `${bu.cash_pct.toFixed(0)}% / ${bu.rules.cash_buffer_pct.toFixed(0)}%`]);
+    if (bu) stats.push(["Deployable", `$${Math.max(0, bu.buffer_headroom).toFixed(0)}`]);
+    out.push(`<section><h2>Your book</h2>
+      ${flags.length ? `<div class="flags">${flags.map((f) => `<div class="flag ${f.severity}"><span class="sev">${f.severity === "high" ? "HIGH" : "WARN"}</span><span><b>${esc(f.position)}</b> ${esc(f.message)}</span></div>`).join("")}</div>` : ""}
+      <div class="stats">${stats.map(([k, v]) => `<div class="stat"><span class="k">${k}</span><span class="v num">${v}</span></div>`).join("")}</div>
+    </section>`);
+  }
+
+  const rv = b.review;
+  if (rv) {
+    const act = { hold: "HOLD", close: "CLOSE", roll: "ROLL" };
+    const money = (x) => (x < 0 ? "−$" : "+$") + Math.abs(x).toFixed(0);
+    const holds = rv.holdings.map((h) => {
+      const ev = h.hold ? (h.has_edge ? h.hold.ev_plan : h.hold.ev_no_edge) : null;
+      return `<div class="flag ${h.action === "close" ? "high" : h.action === "roll" ? "warn" : "ok"}"><span class="sev">${act[h.action]}</span>
+        <span><b>${esc(h.underlying)}</b> ${esc(h.positions.map((p) => p.replace(h.underlying + " ", "")).join(", "))}${ev != null ? ` · hold EV <span class="num">${money(ev)}</span>` : ""}<br><span class="src">${esc(h.reasons[0] || "")}</span></span></div>`;
+    }).join("");
+    const reps = (rv.replacements || []).map((x) => `<div class="flag warn"><span class="sev">SWAP</span><span>Close <b>${esc(x.close)}</b> → open <b>${esc(x.open)}</b> ${esc(x.open_pick.structure.replace(/_/g, " "))} ×${x.lots} · gain <span class="num">${money(x.gain)}</span> (${money(x.gain_no_edge)} if no edge)</span></div>`).join("");
+    const cands = rv.candidates.map((c) => `<span class="chip">${esc(c.symbol)} ${c.verdict === "enter" ? "ENTER" : "WAIT"}${c.robust ? " · robust" : ""}</span>`).join("");
+    const changes = (b.changes || []).map((c) => `<li>${esc(c)}</li>`).join("");
+    out.push(`<section><h2>Book review</h2><div class="flags">${holds}${reps}</div>
+      ${cands ? `<div class="chips" style="margin-top:10px">${cands}</div>` : ""}
+      ${changes ? `<div class="read"><ul>${changes}</ul></div>` : ""}</section>`);
+  }
+  if ((b.events || []).length) {
+    out.push(`<section><h2>Reports ahead</h2><div class="chips">${b.events.map((e) =>
+      `<span class="chip">${esc(e.symbol)} ${esc(e.date.slice(5))} · ${e.days}d${e.estimated ? " est." : ""}${e.implied_move_pct != null ? " · ±" + e.implied_move_pct.toFixed(1) + "%" : ""}${e.cluster.length ? " · with " + esc(e.cluster.join(", ")) : ""}${e.role === "candidate" ? " · candidate" : ""}</span>`).join("")}</div></section>`);
+  }
+  if ((b.catalyst_due || []).length) {
+    out.push(`<section><h2>Catalyst check due</h2><div class="read"><ul>${b.catalyst_due.map((d) => `<li><b>${esc(d.symbol)}</b> ${esc(d.reasons.join("; "))}</li>`).join("")}</ul></div></section>`);
+  }
+
+  if (b.earnings_soon.length) {
+    out.push(`<section><h2>Earnings within a week</h2><div class="chips">${b.earnings_soon.map((s) => {
+      const x = bySym[s]; return `<span class="chip">${esc(s)} ${esc(x.earnings.date.slice(5))} · ${x.earnings_in_days}d${x.earnings.estimated ? " est." : ""}</span>`; }).join("")}</div></section>`);
+  }
+
+  const ladder = (s) => {
+    const p = s.price, s1 = s.supports[0]?.price, r1 = s.resistances[0]?.price, em = s.expected_move;
+    if (p == null || (s1 == null && r1 == null)) return "";
+    const pts = [p, s1, r1, em != null ? p - em : null, em != null ? p + em : null].filter((x) => x != null);
+    let lo = Math.min(...pts), hi = Math.max(...pts); const pad = (hi - lo) * 0.08 || p * 0.01; lo -= pad; hi += pad;
+    const at = (x) => ((x - lo) / (hi - lo) * 100).toFixed(2) + "%";
+    let h = `<div class="ladder" aria-hidden="true"><div class="rail"></div>`;
+    if (em != null) h += `<div class="band" style="left:${at(p - em)};width:calc(${at(p + em)} - ${at(p - em)})"></div>`;
+    if (s1 != null) h += `<div class="lv s" style="left:${at(s1)}"></div>`;
+    if (r1 != null) h += `<div class="lv r" style="left:${at(r1)}"></div>`;
+    return h + `<div class="dot" style="left:${at(p)}"></div></div>`;
+  };
+  const row = (s) => {
+    const s1 = s.supports[0], r1 = s.resistances[0];
+    const tags = [];
+    if (s.realtime) tags.push(`<span class="tag">rt</span>`);
+    if (s.earnings_in_days != null && s.earnings_in_days <= 7) tags.push(`<span class="tag earn">earnings ${s.earnings_in_days}d</span>`);
+    const detail = [];
+    if (s1) detail.push(`S1 <span class="num">${px(s1.price)}</span>`);
+    if (r1) detail.push(`R1 <span class="num">${px(r1.price)}</span>`);
+    if (s.expected_move_pct != null) detail.push(`EM <span class="num">±${s.expected_move_pct.toFixed(1)}%</span>`);
+    if (s.move_vs_expected != null) detail.push(`move <span class="num">${s.move_vs_expected.toFixed(1)}×</span> EM`);
+    if (s.iv30 != null) detail.push(`IV30 <span class="num">${(s.iv30 * 100).toFixed(0)}%</span>${s.iv_rank ? ` rank <span class="num">${s.iv_rank.rank.toFixed(0)}</span>` : ""}`);
+    if (s.session_levels?.gap_pct != null) detail.push(`gap <span class="num">${pct(s.session_levels.gap_pct)}</span>`);
+    if (s.earnings && (s.earnings_in_days == null || s.earnings_in_days > 7)) detail.push(`earnings <span class="num">${esc(s.earnings.date.slice(5))}</span>`);
+    const src = [s1 && "S1: " + s1.sources.slice(0, 3).join(", "), r1 && "R1: " + r1.sources.slice(0, 3).join(", ")].filter(Boolean).join(" · ");
+    return `<div class="row">
+      <div class="row-top"><span class="sym">${esc(s.symbol)}${tags.join("")}</span>
+        <span class="px num">${px(s.price)}</span>
+        <span class="move ${cls(s.change_pct)}">${pct(s.change_pct)}</span></div>
+      ${ladder(s)}
+      <div class="detail">${detail.map((x) => `<span>${x}</span>`).join("")}</div>
+      ${src ? `<div class="src">${esc(src)}</div>` : ""}
+    </div>`;
+  };
+  const group = (title, list) => list.length ? `<section><h2>${title}</h2><div class="list">${list.map(row).join("")}</div></section>` : "";
+  const movers = b.movers.map((s) => bySym[s]).filter(Boolean).filter((s) => s.group !== "index").slice(0, 5);
+  out.push(group("Biggest moves vs expected", movers));
+  out.push(group("Positions", b.symbols.filter((s) => s.group === "position")));
+  out.push(group("Watchlist", b.symbols.filter((s) => s.group === "watchlist")));
+
+  out.push(`<footer><span>Ladder: green tick = nearest support, red tick = nearest resistance, band = today's 1σ expected move, dot = price.</span>
+    <span>Levels merge swing pivots, volume profile, moving averages, prior day/week, pre-market and overnight ranges, and options positioning. Not investment advice.</span></footer>`);
+  app.innerHTML = out.join("");
+})();
+</script>
