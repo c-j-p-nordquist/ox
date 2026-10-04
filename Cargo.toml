@@ -1,6 +1,6 @@
 [package]
 name = "ox"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Options contract picker: a backtested trade plan (ENTER / WAIT / NO TRADE) and the contracts that fit it"
 license = "MIT"
