@@ -384,6 +384,21 @@ impl Engine {
         Ok(report)
     }
 
+    /// Strikes within this fraction of spot are kept in the heatmap grid.
+    const MAP_RANGE: f64 = 0.25;
+
+    pub async fn gex_map(&self, symbol: &str, max_dte: Option<u32>) -> Result<gex::GexMap> {
+        let chain = self.chain(symbol).await?;
+        let report = self.gex(symbol, max_dte).await?;
+        let r = self.cfg.risk_free_rate;
+        tokio::task::spawn_blocking(move || {
+            let grid = gex::grid(&chain, Utc::now(), r, max_dte, Self::MAP_RANGE);
+            let read = gex::read(&report, &grid);
+            Ok(gex::GexMap { gex: (*report).clone(), grid, read })
+        })
+        .await?
+    }
+
     /// Walk-forward level calibration for a symbol's daily bars, memoized per bar set.
     async fn calibration(&self, sym: &str, daily: &Arc<Vec<Bar>>) -> Result<Arc<pick::zones::Calibration>> {
         let key = (daily.len(), daily.last().map_or(0, |b| b.t));
@@ -793,6 +808,7 @@ impl Engine {
                 Response::Chain(analytics::chain_view(&chain, now, exp, strikes))
             }
             Request::Gex { symbol, max_dte } => Response::Gex((*self.gex(&symbol, max_dte).await?).clone()),
+            Request::GexMap { symbol, max_dte } => Response::GexMap(Box::new(self.gex_map(&symbol, max_dte).await?)),
             Request::Overview { symbol } => {
                 let chain = self.chain(&symbol).await?;
                 let g = self.gex(&symbol, None).await?;

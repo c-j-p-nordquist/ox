@@ -14,6 +14,7 @@ mod pick_view;
 mod portfolio;
 mod protocol;
 mod provider;
+mod serve;
 mod skills;
 mod watchlist;
 
@@ -126,8 +127,19 @@ enum Cmd {
         /// Number of strikes around spot to show.
         #[arg(long, default_value_t = 30)]
         rows: usize,
+        /// Heatmap by strike and expiration, with a read of where gamma is concentrated.
+        #[arg(long)]
+        map: bool,
         #[arg(long)]
         json: bool,
+    },
+    /// Open the GEX heatmap in a browser (local web page; the picker's plan drawn on it).
+    Serve {
+        #[arg(long, default_value_t = 8642)]
+        port: u16,
+        /// Don't open a browser.
+        #[arg(long)]
+        no_open: bool,
     },
     /// Option chain for one expiration.
     Chain {
@@ -291,7 +303,11 @@ async fn run() -> Result<()> {
         Cmd::Chain { symbol, exp, dte, strikes, json } => {
             cli::chain(&connect().await?, symbol, exp, dte, strikes, json).await
         }
-        Cmd::Gex { symbol, dte, rows, json } => cli::gex(&connect().await?, symbol, dte, rows, json).await,
+        Cmd::Gex { symbol, dte, rows, map: true, json } => {
+            cli::gex_map(&connect().await?, symbol, dte, rows, json).await
+        }
+        Cmd::Gex { symbol, dte, rows, map: false, json } => cli::gex(&connect().await?, symbol, dte, rows, json).await,
+        Cmd::Serve { port, no_open } => serve::run(connect().await?, cfg.clone(), port, !no_open).await,
         Cmd::Overview { symbol, json } => cli::overview(&connect().await?, symbol, json).await,
         Cmd::Portfolio { action: Some(PortfolioCmd::Import { file }), .. } => cli::portfolio_import(&file),
         Cmd::Portfolio { action: None, json } => cli::portfolio_show(&connect().await?, json).await,

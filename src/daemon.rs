@@ -84,10 +84,21 @@ async fn serve(stream: UnixStream, engine: Arc<Engine>, stop: tokio::sync::mpsc:
     }
 }
 
-/// Spawn the daemon detached and wait until it answers.
+/// Spawn the daemon detached and wait until it answers. A daemon from another ox version is
+/// replaced, since it may not understand this version's requests.
 pub async fn start() -> Result<Status> {
     if let Some(s) = status().await {
-        return Ok(s);
+        if s.version == env!("CARGO_PKG_VERSION") {
+            return Ok(s);
+        }
+        eprintln!("replacing oxd {} with {}", s.version, env!("CARGO_PKG_VERSION"));
+        stop().await?;
+        for _ in 0..50 {
+            if status().await.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(60)).await;
+        }
     }
     std::fs::create_dir_all(state_dir())?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(log_path())?;

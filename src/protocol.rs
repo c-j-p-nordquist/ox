@@ -4,7 +4,7 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
-use crate::analytics::gex::GexReport;
+use crate::analytics::gex::{GexMap, GexReport};
 use crate::analytics::levels::LevelsReport;
 use crate::analytics::pick::{PickParams, PickReport};
 use crate::analytics::risk::RiskReport;
@@ -50,6 +50,11 @@ pub enum Request {
         symbol: String,
         max_dte: Option<u32>,
     },
+    /// GEX by strike and expiration (the heatmap), with a read of it.
+    GexMap {
+        symbol: String,
+        max_dte: Option<u32>,
+    },
     Overview {
         symbol: String,
     },
@@ -91,6 +96,7 @@ pub enum Response {
     Collected(Vec<(String, String)>),
     Chain(ChainView),
     Gex(GexReport),
+    GexMap(Box<GexMap>),
     Overview(Overview),
     Portfolio(Option<PortfolioView>),
     Risk(Option<RiskReport>),

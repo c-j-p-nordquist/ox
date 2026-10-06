@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ox GEX map</title>
+<style>
+:root {
+  --bg: #f6f6f4; --surface: #fcfcfb; --surface-2: #f0efec; --line: #e2e1dc;
+  --ink: #1d1d1b; --ink-2: #55554f; --ink-3: #8a8a83;
+  --pos: #2a78d6; --neg: #e34948; --mid: #f0efec;
+  --spot: #1d1d1b; --zero: #b7791f; --plan: #6b4fbb; --stop: #e34948; --target: #0ca30c;
+  --ring: #1d1d1b;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121211; --surface: #1a1a19; --surface-2: #232321; --line: #2f2f2c;
+    --ink: #ecebe6; --ink-2: #b4b3ac; --ink-3: #7c7b75;
+    --pos: #3987e5; --neg: #e66767; --mid: #383835;
+    --spot: #ecebe6; --zero: #e0a442; --plan: #a08ae6; --stop: #e66767; --target: #3fbf5a;
+    --ring: #ffffff;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121211; --surface: #1a1a19; --surface-2: #232321; --line: #2f2f2c;
+  --ink: #ecebe6; --ink-2: #b4b3ac; --ink-3: #7c7b75;
+  --pos: #3987e5; --neg: #e66767; --mid: #383835;
+  --spot: #ecebe6; --zero: #e0a442; --plan: #a08ae6; --stop: #e66767; --target: #3fbf5a;
+  --ring: #ffffff;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.num, .mono { font-variant-numeric: tabular-nums; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+header {
+  display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
+  padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--surface);
+  position: sticky; top: 0; z-index: 5;
+}
+header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .01em; }
+header h1 span { color: var(--ink-3); font-weight: 500; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+input, select, button {
+  font: inherit; color: var(--ink); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px;
+}
+input#sym { width: 92px; text-transform: uppercase; font-weight: 600; }
+button { cursor: pointer; }
+button:hover { border-color: var(--ink-3); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: var(--surface-2); color: var(--ink-2); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+label.chk { display: inline-flex; gap: 5px; align-items: center; color: var(--ink-2); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 16px 0; }
+.chips button { padding: 2px 8px; font-size: 12px; color: var(--ink-2); }
+.chips button.on { color: var(--ink); border-color: var(--ink-2); }
+.fresh { color: var(--ink-3); font-size: 12px; padding: 6px 16px 0; }
+main { padding: 12px 16px 32px; display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) 340px; }
+@media (max-width: 1000px) { main { grid-template-columns: minmax(0, 1fr); } }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); margin: 0 0 8px; font-weight: 600; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; grid-column: 1 / -1; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
+.stat .k { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; }
+.stat .v { font-size: 18px; font-weight: 600; }
+.stat .s { font-size: 12px; color: var(--ink-2); }
+#heatwrap { position: relative; }
+#heat { display: block; width: 100%; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; font-size: 12px; color: var(--ink-2); margin-top: 8px; }
+.legend .ramp { width: 140px; height: 10px; border-radius: 3px; }
+.legend i { display: inline-block; width: 16px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 4px; }
+#tip {
+  position: fixed; pointer-events: none; z-index: 10; display: none;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.18); min-width: 180px;
+}
+#tip b { font-weight: 600; }
+#tip .row { display: flex; justify-content: space-between; gap: 14px; }
+#tip .row span:first-child { color: var(--ink-3); }
+.side { display: flex; flex-direction: column; gap: 14px; }
+.read p { margin: 0 0 8px; color: var(--ink-2); font-size: 13px; }
+.verdict { display: inline-block; font-weight: 700; font-size: 12px; letter-spacing: .05em; padding: 2px 8px; border-radius: 5px; border: 1px solid; }
+.verdict.enter { color: var(--target); }
+.verdict.wait { color: var(--zero); }
+.verdict.no_trade { color: var(--ink-3); }
+ul.tight { margin: 6px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 13px; }
+ul.tight li { margin-bottom: 4px; }
+.plan { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+.plan td { padding: 3px 0; border-bottom: 1px solid var(--line); }
+.plan td:last-child { text-align: right; }
+.muted { color: var(--ink-3); }
+.err { color: var(--neg); }
+#profile { display: block; width: 100%; height: 220px; }
+.loading { color: var(--ink-3); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ox <span>GEX map</span></h1>
+  <form class="controls" id="form">
+    <input id="sym" list="symlist" placeholder="SYM" autocomplete="off" spellcheck="false" aria-label="Symbol">
+    <datalist id="symlist"></datalist>
+    <select id="dte" aria-label="Max days to expiry">
+      <option value="">All expirations</option>
+      <option value="7">≤ 7 DTE</option>
+      <option value="14">≤ 14 DTE</option>
+      <option value="30">≤ 30 DTE</option>
+      <option value="60">≤ 60 DTE</option>
+      <option value="120">≤ 120 DTE</option>
+    </select>
+    <div class="seg" id="metric" role="group" aria-label="Metric">
+      <button type="button" data-v="net">Net GEX</button>
+      <button type="button" data-v="call">Call GEX</button>
+      <button type="button" data-v="put">Put GEX</button>
+      <button type="button" data-v="oi">Open interest</button>
+    </div>
+    <select id="zoom" aria-label="Strike range">
+      <option value="0.05">±5%</option>
+      <option value="0.1">±10%</option>
+      <option value="0.15">±15%</option>
+      <option value="0.25">±25%</option>
+    </select>
+    <label class="chk"><input type="checkbox" id="showplan" checked> Plan</label>
+    <button type="submit">Load</button>
+  </form>
+</header>
+<div class="chips" id="chips"></div>
+<div class="fresh" id="fresh"></div>
+<main>
+  <div class="stats" id="stats"></div>
+  <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+    <section class="card">
+      <h2 id="heattitle">Net GEX by strike and expiration</h2>
+      <div id="heatwrap"><canvas id="heat" height="600"></canvas></div>
+      <div class="legend" id="legend"></div>
+    </section>
+    <section class="card">
+      <h2>Net GEX if spot moved (sticky-strike IV)</h2>
+      <svg id="profile" role="img" aria-label="Net GEX profile across hypothetical spot prices"></svg>
+    </section>
+  </div>
+  <aside class="side">
+    <section class="card read"><h2>Read</h2><div id="read" class="loading">—</div></section>
+    <section class="card"><h2>ox pick</h2><div id="pick" class="loading">—</div></section>
+  </aside>
+</main>
+<div id="tip"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { symbol: "", dte: "", metric: "net", zoom: "0.1", plan: true, map: null, pick: null, pickFor: null };
+
+// ---------- formatting ----------
+function big(x) {
+  const a = Math.abs(x);
+  const f = (v, s) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1)) + s;
+  if (a >= 1e9) return f(x / 1e9, "B");
+  if (a >= 1e6) return f(x / 1e6, "M");
+  if (a >= 1e3) return f(x / 1e3, "K");
+  return x.toFixed(0);
+}
+const sbig = (x) => (x > 0 ? "+" : x < 0 ? "−" : "") + big(Math.abs(x));
+const px = (x) => (x == null ? "–" : x >= 1000 ? x.toFixed(0) : x.toFixed(2));
+const strike = (x) => (Number.isInteger(x) ? String(x) : x.toFixed(x * 10 % 1 === 0 ? 1 : 2));
+const rel = (x, s) => (x == null ? "" : ((x / s - 1) * 100 >= 0 ? "+" : "") + ((x / s - 1) * 100).toFixed(1) + "%");
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmtDate = (d) => new Date(d + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// ---------- colors ----------
+function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; }
+function mix(a, b, t) { return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(",")})`; }
+/// Diverging for net (blue +, red −, neutral gray midpoint); sequential otherwise.
+function cellColor(v, max, metric) {
+  const mid = hexRgb(css("--mid"));
+  if (!max || !v) return null;
+  const t = Math.min(1, Math.sqrt(Math.abs(v) / max));
+  const hue = metric === "put" ? css("--neg") : metric === "net" ? (v >= 0 ? css("--pos") : css("--neg")) : css("--pos");
+  return mix(mid, hexRgb(hue), t);
+}
+
+// ---------- data ----------
+async function getJSON(url) {
+  const r = await fetch(url);
+  const body = await r.json().catch(() => ({ error: r.statusText }));
+  if (!r.ok || body.error) throw new Error(body.error || r.statusText);
+  return body;
+}
+
+async function load() {
+  const sym = state.symbol;
+  if (!sym) return;
+  writeHash();
+  $("read").innerHTML = '<span class="loading">Loading chain…</span>';
+  $("stats").innerHTML = "";
+  markChips();
+  try {
+    const q = new URLSearchParams({ symbol: sym });
+    if (state.dte) q.set("dte", state.dte);
+    state.map = await getJSON("/api/gexmap?" + q);
+    if (state.symbol !== sym) return;
+    render();
+  } catch (e) {
+    $("read").innerHTML = `<span class="err">${esc(e.message)}</span>`;
+    state.map = null;
+    clearHeat();
+  }
+  if (state.pickFor !== sym) loadPick(sym);
+}
+
+async function loadPick(sym) {
+  state.pick = null;
+  state.pickFor = sym;
+  $("pick").innerHTML = '<span class="loading">Running ox pick (backtest)…</span>';
+  try {
+    const p = await getJSON("/api/pick?symbol=" + encodeURIComponent(sym));
+    if (state.pickFor !== sym) return;
+    state.pick = p;
+    renderPick();
+    if (state.map) { drawHeat(); renderStats(); }
+  } catch (e) {
+    if (state.pickFor === sym) $("pick").innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  }
+}
+
+// ---------- view model ----------
+function metricValue(g, e, k, m) {
+  switch (m) {
+    case "call": return g.call_gex[e][k];
+    case "put": return -g.put_gex[e][k];
+    case "oi": return g.call_oi[e][k] + g.put_oi[e][k];
+    default: return g.call_gex[e][k] + g.put_gex[e][k];
+  }
+}
+
+function view() {
+  const { gex, grid } = state.map;
+  const s = gex.spot, z = parseFloat(state.zoom), m = state.metric;
+  const cols = grid.expiries.map((_, i) => i);
+  let rows = grid.strikes.map((k, i) => i).filter((i) => Math.abs(grid.strikes[i] - s) <= s * z);
+  let max = 0;
+  for (const k of rows) for (const e of cols) max = Math.max(max, Math.abs(metricValue(grid, e, k, m)));
+  // Drop strikes with nothing visible (sparse far-dated strikes clutter the map).
+  rows = rows.filter((k) => cols.some((e) => Math.abs(metricValue(grid, e, k, m)) > max * 0.01));
+  const totals = rows.map((k) => cols.reduce((a, e) => a + metricValue(grid, e, k, m), 0));
+  const tmax = Math.max(...totals.map(Math.abs), 0);
+  // Top cells by absolute value ("lit" nodes).
+  const cells = [];
+  for (const k of rows) for (const e of cols) cells.push([e, k, Math.abs(metricValue(grid, e, k, m))]);
+  cells.sort((a, b) => b[2] - a[2]);
+  const lit = new Set(cells.slice(0, 5).filter((c) => c[2] > 0).map((c) => c[0] + ":" + c[1]));
+  return { rows: rows.reverse(), cols, max, totals: totals.reverse(), tmax, lit };
+}
+
+// ---------- heatmap ----------
+let layout = null;
+function clearHeat() { const c = $("heat"); c.getContext("2d").clearRect(0, 0, c.width, c.height); layout = null; }
+
+function drawHeat() {
+  const { gex, grid } = state.map;
+  const v = view();
+  const canvas = $("heat"), wrap = $("heatwrap");
+  const W = wrap.clientWidth;
+  const left = 64, top = 36, barW = Math.min(150, Math.max(90, W * 0.16)), gap = 14, right = barW + gap + 92;
+  const cellH = Math.max(14, Math.min(24, Math.floor(620 / Math.max(1, v.rows.length))));
+  const H = top + v.rows.length * cellH + 8;
+  const plotW = Math.max(120, W - left - right);
+  const cellW = plotW / Math.max(1, v.cols.length);
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = W * dpr; canvas.height = H * dpr; canvas.style.height = H + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const ink2 = css("--ink-2"), ink3 = css("--ink-3"), surface = css("--surface"), mid = css("--mid");
+  ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+
+  // Column headers: expiry date and DTE, thinned when crowded.
+  const every = Math.max(1, Math.ceil(58 / cellW));
+  ctx.textAlign = "center"; ctx.fillStyle = ink2;
+  v.cols.forEach((e, j) => {
+    if (j % every) return;
+    const x = left + j * cellW + cellW / 2, ex = grid.expiries[e];
+    ctx.fillText(fmtDate(ex.expiry), x, 14);
+    ctx.fillStyle = ink3; ctx.fillText(ex.dte + "d", x, 27); ctx.fillStyle = ink2;
+  });
+
+  // Cells with a 1px surface gap.
+  v.rows.forEach((k, i) => {
+    const y = top + i * cellH;
+    ctx.fillStyle = ink2; ctx.textAlign = "right";
+    ctx.fillText(strike(grid.strikes[k]), left - 8, y + cellH / 2 + 4);
+    v.cols.forEach((e, j) => {
+      const val = metricValue(grid, e, k, state.metric);
+      ctx.fillStyle = cellColor(val, v.max, state.metric) || mid;
+      ctx.globalAlpha = cellColor(val, v.max, state.metric) ? 1 : 0.35;
+      ctx.fillRect(left + j * cellW + 1, y + 1, cellW - 2, cellH - 2);
+      ctx.globalAlpha = 1;
+    });
+  });
+  // Lit nodes: a ring around the five largest cells.
+  ctx.strokeStyle = css("--ring"); ctx.lineWidth = 2;
+  v.rows.forEach((k, i) => v.cols.forEach((e, j) => {
+    if (v.lit.has(e + ":" + k)) ctx.strokeRect(left + j * cellW + 1.5, top + i * cellH + 1.5, cellW - 3, cellH - 3);
+  }));
+
+  // Aggregate bars: all visible expirations per strike.
+  const bx = left + plotW + gap, bmid = bx + barW / 2;
+  ctx.fillStyle = ink3; ctx.textAlign = "center"; ctx.fillText("all expirations", bmid, 27);
+  ctx.strokeStyle = css("--line"); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(bmid + .5, top); ctx.lineTo(bmid + .5, top + v.rows.length * cellH); ctx.stroke();
+  v.rows.forEach((k, i) => {
+    const t = v.totals[i]; if (!v.tmax || !t) return;
+    const w = (Math.abs(t) / v.tmax) * (barW / 2 - 2);
+    const neg = state.metric === "put" || (state.metric === "net" && t < 0);
+    ctx.fillStyle = neg ? css("--neg") : css("--pos");
+    const y = top + i * cellH + 3, h = cellH - 6;
+    if (state.metric === "net") ctx.fillRect(t >= 0 ? bmid + 1 : bmid - w, y, w, h);
+    else ctx.fillRect(bx, y, w * 2, h);
+  });
+
+  // Price -> y, interpolating between visible strike rows (rows are top = highest strike).
+  const ks = v.rows.map((k) => grid.strikes[k]);
+  const yOf = (p) => {
+    if (!ks.length) return null;
+    if (p > ks[0] || p < ks[ks.length - 1]) return null;
+    for (let i = 0; i < ks.length - 1; i++) {
+      if (p <= ks[i] && p >= ks[i + 1]) {
+        const f = ks[i] === ks[i + 1] ? 0 : (ks[i] - p) / (ks[i] - ks[i + 1]);
+        return top + (i + f) * cellH + cellH / 2;
+      }
+    }
+    return top + cellH / 2;
+  };
+  const x1 = left + plotW + gap + barW;
+  const lines = [
+    { p: gex.spot, label: "spot " + px(gex.spot), color: css("--spot"), dash: [], w: 2 },
+    { p: gex.zero_gamma, label: "zero γ " + px(gex.zero_gamma), color: css("--zero"), dash: [6, 4], w: 2 },
+  ];
+  const setup = state.plan && state.pick && state.pick.setups && state.pick.setups[0];
+  if (setup) {
+    const add = (lv, name, color) => lv && lines.push({ p: lv.price, label: name + " " + px(lv.price), color, dash: [2, 3], w: 1.5 });
+    add(setup.b1, "B1", css("--plan")); add(setup.b2, "B2", css("--plan"));
+    add(setup.sl, "SL", css("--stop")); add(setup.t1, "T1", css("--target")); add(setup.t2, "T2", css("--target"));
+  }
+  const placed = [], offscreen = { up: [], down: [] };
+  ctx.textAlign = "left";
+  for (const l of lines) {
+    if (l.p == null) continue;
+    const y = yOf(l.p);
+    if (y == null) {
+      // Outside the visible strikes: an arrow label pinned to the top or bottom edge.
+      const above = ks.length && l.p > ks[0];
+      offscreen[above ? "up" : "down"].push({ ...l, label: (above ? "↑ " : "↓ ") + l.label });
+      continue;
+    }
+    ctx.save(); ctx.strokeStyle = l.color; ctx.lineWidth = l.w; ctx.setLineDash(l.dash);
+    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(x1, y); ctx.stroke(); ctx.restore();
+    // Labels on the right, nudged apart so they don't collide.
+    let ly = y + 4;
+    while (placed.some((p) => Math.abs(p - ly) < 13)) ly += 13;
+    placed.push(ly);
+    ctx.fillStyle = l.color; ctx.font = "600 11px ui-sans-serif, -apple-system, sans-serif";
+    ctx.fillText(l.label, x1 + 6, ly);
+  }
+  ctx.font = "600 11px ui-sans-serif, -apple-system, sans-serif";
+  offscreen.up.forEach((l, n) => { ctx.fillStyle = l.color; ctx.fillText(l.label, x1 + 6, top + 10 + n * 13); });
+  offscreen.down.forEach((l, n) => { ctx.fillStyle = l.color; ctx.fillText(l.label, x1 + 6, top + v.rows.length * cellH - 4 - n * 13); });
+  // Wall markers on the strike axis.
+  ctx.font = "600 10px ui-sans-serif, -apple-system, sans-serif"; ctx.textAlign = "left";
+  for (const [p, t, c] of [[gex.call_wall, "CW", css("--pos")], [gex.put_wall, "PW", css("--neg")]]) {
+    const i = ks.indexOf(p); if (i < 0) continue;
+    ctx.fillStyle = c; ctx.fillText(t, 2, top + i * cellH + cellH / 2 + 4);
+  }
+  layout = { left, top, cellW, cellH, plotW, v, bx, barW };
+  renderLegend(v);
+}
+
+function renderLegend(v) {
+  const m = state.metric, mid = css("--mid");
+  const ramp = m === "net" ? `linear-gradient(90deg, ${css("--neg")}, ${mid}, ${css("--pos")})`
+    : `linear-gradient(90deg, ${mid}, ${m === "put" ? css("--neg") : css("--pos")})`;
+  const ends = m === "net" ? [`−${big(v.max)}`, `+${big(v.max)}`] : ["0", big(v.max)];
+  const what = { net: "net GEX $/1% (blue: dealers long gamma)", call: "call GEX $/1%", put: "put GEX $/1% (magnitude)", oi: "open interest, calls + puts" }[m];
+  let html = `<span class="mono">${ends[0]}</span><span class="ramp" style="background:${ramp}"></span><span class="mono">${ends[1]}</span><span>${what}; color ∝ √|value|</span>`;
+  html += `<span><i style="border-color:${css("--spot")}"></i>spot</span><span><i style="border-color:${css("--zero")};border-top-style:dashed"></i>zero gamma</span>`;
+  if (state.plan && state.pick && state.pick.setups && state.pick.setups[0]) html += `<span><i style="border-color:${css("--plan")};border-top-style:dotted"></i>pick plan: ${esc(state.pick.setups[0].name)}${state.pick.setups[0].has_edge ? "" : " (no measured edge)"}</span>`;
+  html += `<span>□ ring = 5 largest nodes</span>`;
+  $("legend").innerHTML = html;
+}
+
+// Tooltip.
+$("heat").addEventListener("mousemove", (ev) => {
+  if (!layout || !state.map) return;
+  const r = ev.target.getBoundingClientRect();
+  const x = ev.clientX - r.left, y = ev.clientY - r.top;
+  const { left, top, cellW, cellH, plotW, v } = layout;
+  const i = Math.floor((y - top) / cellH);
+  const inGrid = x >= left && x < left + plotW;
+  const inBars = x >= layout.bx && x <= layout.bx + layout.barW;
+  if (i < 0 || i >= v.rows.length || !(inGrid || inBars)) return hideTip();
+  const g = state.map.grid, k = v.rows[i];
+  let html;
+  if (inGrid) {
+    const e = v.cols[Math.floor((x - left) / cellW)];
+    if (e == null) return hideTip();
+    const ex = g.expiries[e], cg = g.call_gex[e][k], pg = g.put_gex[e][k];
+    html = `<b>${strike(g.strikes[k])}</b> · ${fmtDate(ex.expiry)} <span class="muted">(${ex.dte} DTE)</span>` +
+      row("Net GEX", sbig(cg + pg)) + row("Call GEX", sbig(cg)) + row("Put GEX", sbig(pg)) +
+      row("Call OI", big(g.call_oi[e][k])) + row("Put OI", big(g.put_oi[e][k])) +
+      row("vs spot", rel(g.strikes[k], state.map.gex.spot));
+  } else {
+    const s = state.map.gex.strikes.find((x) => x.strike === g.strikes[k]);
+    html = `<b>${strike(g.strikes[k])}</b> · all expirations` +
+      row("Shown (" + state.metric + ")", state.metric === "oi" ? big(v.totals[i]) : sbig(v.totals[i])) +
+      (s ? row("Net GEX", sbig(s.net_gex)) + row("Call OI", big(s.call_oi)) + row("Put OI", big(s.put_oi)) : "");
+  }
+  const tip = $("tip");
+  tip.innerHTML = html; tip.style.display = "block";
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  tip.style.left = Math.min(ev.clientX + 14, innerWidth - tw - 8) + "px";
+  tip.style.top = Math.min(ev.clientY + 14, innerHeight - th - 8) + "px";
+});
+$("heat").addEventListener("mouseleave", hideTip);
+function hideTip() { $("tip").style.display = "none"; }
+const row = (k, v) => `<div class="row"><span>${k}</span><span class="num">${v}</span></div>`;
+
+// ---------- profile ----------
+function drawProfile() {
+  const svg = $("profile"), { gex } = state.map, pts = gex.profile;
+  const W = svg.clientWidth, H = 220, l = 56, r = 12, t = 12, b = 26;
+  if (!pts.length) { svg.innerHTML = ""; return; }
+  const xs = pts.map((p) => p.spot), ys = pts.map((p) => p.net_gex);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const ymax = Math.max(...ys.map(Math.abs)) || 1;
+  const X = (x) => l + (x - x0) / (x1 - x0) * (W - l - r);
+  const Y = (y) => t + (1 - (y + ymax) / (2 * ymax)) * (H - t - b);
+  const path = pts.map((p, i) => (i ? "L" : "M") + X(p.spot).toFixed(1) + "," + Y(p.net_gex).toFixed(1)).join("");
+  const area = path + `L${X(x1)},${Y(0)}L${X(x0)},${Y(0)}Z`;
+  const ticks = [];
+  for (let i = 0; i <= 4; i++) { const x = x0 + (x1 - x0) * i / 4; ticks.push(`<text x="${X(x)}" y="${H - 8}" text-anchor="middle">${px(x)}</text>`); }
+  // Label on the outer side of each line so spot and zero gamma don't overlap.
+  const vline = (x, color, dash, label, side) => x == null ? "" :
+    `<line x1="${X(x)}" x2="${X(x)}" y1="${t}" y2="${H - b}" stroke="${color}" stroke-width="2" stroke-dasharray="${dash}"/>` +
+    `<text x="${X(x) + (side < 0 ? -4 : 4)}" y="${t + 10}" text-anchor="${side < 0 ? "end" : "start"}" fill="${color}" font-weight="600">${label}</text>`;
+  const zSide = gex.zero_gamma != null && gex.zero_gamma < gex.spot ? -1 : 1;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = `
+    <defs><clipPath id="above"><rect x="0" y="0" width="${W}" height="${Y(0)}"/></clipPath>
+    <clipPath id="below"><rect x="0" y="${Y(0)}" width="${W}" height="${H}"/></clipPath></defs>
+    <g font-size="11" fill="${css("--ink-3")}" font-family="ui-monospace, Menlo, monospace">${ticks.join("")}
+      <text x="${l - 6}" y="${Y(ymax) + 4}" text-anchor="end">+${big(ymax)}</text>
+      <text x="${l - 6}" y="${Y(0) + 4}" text-anchor="end">0</text>
+      <text x="${l - 6}" y="${Y(-ymax) + 4}" text-anchor="end">−${big(ymax)}</text></g>
+    <line x1="${l}" x2="${W - r}" y1="${Y(0)}" y2="${Y(0)}" stroke="${css("--line")}"/>
+    <path d="${area}" fill="${css("--pos")}" opacity=".18" clip-path="url(#above)"/>
+    <path d="${area}" fill="${css("--neg")}" opacity=".18" clip-path="url(#below)"/>
+    <path d="${path}" fill="none" stroke="${css("--ink-2")}" stroke-width="2"/>
+    <g font-size="11">${vline(gex.zero_gamma, css("--zero"), "6 4", "zero γ", zSide)}${vline(gex.spot, css("--spot"), "", "spot", -zSide)}</g>
+    <line id="ph" y1="${t}" y2="${H - b}" stroke="${css("--ink-3")}" visibility="hidden"/>
+    <circle id="pd" r="4" fill="${css("--ink")}" stroke="${css("--surface")}" stroke-width="2" visibility="hidden"/>`;
+  svg.onmousemove = (ev) => {
+    const r0 = svg.getBoundingClientRect(), mx = ev.clientX - r0.left;
+    let best = pts[0];
+    for (const p of pts) if (Math.abs(X(p.spot) - mx) < Math.abs(X(best.spot) - mx)) best = p;
+    const ph = $("ph"), pd = $("pd");
+    ph.setAttribute("x1", X(best.spot)); ph.setAttribute("x2", X(best.spot)); ph.setAttribute("visibility", "visible");
+    pd.setAttribute("cx", X(best.spot)); pd.setAttribute("cy", Y(best.net_gex)); pd.setAttribute("visibility", "visible");
+    const tip = $("tip");
+    tip.innerHTML = `<b>spot ${px(best.spot)}</b> <span class="muted">(${rel(best.spot, gex.spot)})</span>` + row("Net GEX", sbig(best.net_gex));
+    tip.style.display = "block";
+    tip.style.left = Math.min(ev.clientX + 14, innerWidth - tip.offsetWidth - 8) + "px";
+    tip.style.top = ev.clientY + 14 + "px";
+  };
+  svg.onmouseleave = () => { hideTip(); $("ph")?.setAttribute("visibility", "hidden"); $("pd")?.setAttribute("visibility", "hidden"); };
+}
+
+// ---------- panels ----------
+function renderStats() {
+  const g = state.map.gex, p = state.pick;
+  const stat = (k, v, s = "") => `<div class="stat"><div class="k">${k}</div><div class="v num">${v}</div><div class="s num">${s}</div></div>`;
+  let html = stat(g.underlying, px(g.spot), { pre: "pre-market", regular: "regular session", post: "after-hours", closed: "market closed" }[g.session] || "")
+    + stat("Net GEX / 1%", sbig(g.total_gex), g.expirations + " expirations" + (g.max_dte ? `, ≤${g.max_dte} DTE` : ""))
+    + stat("Zero gamma", px(g.zero_gamma), rel(g.zero_gamma, g.spot))
+    + stat("Call wall", g.call_wall == null ? "–" : strike(g.call_wall), rel(g.call_wall, g.spot))
+    + stat("Put wall", g.put_wall == null ? "–" : strike(g.put_wall), rel(g.put_wall, g.spot));
+  if (p) html += stat("ox pick", `<span class="verdict ${p.verdict}">${p.verdict.replace("_", " ").toUpperCase()}</span>`, p.bias ? "bias " + p.bias : "");
+  $("stats").innerHTML = html;
+}
+
+function renderRead() {
+  $("read").innerHTML = state.map.read.map((l) => `<p>${esc(l)}</p>`).join("");
+}
+
+function renderPick() {
+  const p = state.pick;
+  if (!p) return;
+  const s = p.setups && p.setups[0];
+  let html = `<span class="verdict ${p.verdict}">${p.verdict.replace("_", " ").toUpperCase()}</span> <span class="muted">${esc(p.bias_basis || "")}</span>`;
+  html += `<p style="margin:8px 0 0">${esc(p.headline)}</p>`;
+  if (p.gamma && p.gamma.note) html += `<p class="muted" style="margin:6px 0 0;font-size:13px">γ: ${esc(p.gamma.note)}</p>`;
+  if (s) {
+    const r = (k, lv, note = "") => lv ? `<tr><td>${k}</td><td class="num">${px(lv.price)} <span class="muted">${note}</span></td></tr>` : "";
+    html += `<table class="plan"><tr><td colspan="2" class="muted">${esc(s.name)} · ${esc(s.status)}${s.has_edge ? "" : " · no measured edge"}</td></tr>`
+      + r("B1", s.b1) + r("B2", s.b2) + r("Stop", s.sl) + r("T1", s.t1, `${s.rr_t1.toFixed(1)}R`) + r("T2", s.t2, `${s.rr_t2.toFixed(1)}R`) + "</table>";
+    if (s.trigger) html += `<p class="muted" style="margin:8px 0 0;font-size:13px">Trigger: ${esc(s.trigger)}</p>`;
+  }
+  if (p.why_not_now && p.why_not_now.length) html += `<ul class="tight">${p.why_not_now.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
+  $("pick").innerHTML = html;
+}
+
+function render() {
+  const g = state.map.gex;
+  const metricName = { net: "Net GEX", call: "Call GEX", put: "Put GEX", oi: "Open interest" }[state.metric];
+  $("heattitle").textContent = `${metricName} by strike and expiration — ${g.underlying}`;
+  const f = g; // freshness fields are flattened into the report
+  const t = (u) => new Date(u * 1000).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  $("fresh").textContent = `cboe delayed · spot ${t(f.spot_as_of)} · option quotes ${f.quotes_stale ? "from the " + t(f.quotes_as_of) + " close" : t(f.quotes_as_of)} · open interest as of session start`;
+  renderStats(); renderRead(); drawHeat(); drawProfile();
+}
+
+// ---------- controls & state ----------
+function writeHash() {
+  const q = new URLSearchParams();
+  if (state.dte) q.set("dte", state.dte);
+  if (state.metric !== "net") q.set("metric", state.metric);
+  if (state.zoom !== "0.1") q.set("zoom", state.zoom);
+  history.replaceState(null, "", "#" + state.symbol + (q.toString() ? "&" + q : ""));
+}
+function readHash() {
+  const [sym, ...rest] = location.hash.slice(1).split("&");
+  const q = new URLSearchParams(rest.join("&"));
+  if (sym) state.symbol = decodeURIComponent(sym).toUpperCase();
+  state.dte = q.get("dte") || "";
+  state.metric = q.get("metric") || "net";
+  state.zoom = q.get("zoom") || "0.1";
+}
+function syncControls() {
+  $("sym").value = state.symbol; $("dte").value = state.dte; $("zoom").value = state.zoom;
+  document.querySelectorAll("#metric button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === state.metric));
+}
+function markChips() {
+  document.querySelectorAll("#chips button").forEach((b) => b.classList.toggle("on", b.textContent === state.symbol));
+}
+
+$("form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  state.symbol = $("sym").value.trim().toUpperCase();
+  load();
+});
+$("dte").addEventListener("change", () => { state.dte = $("dte").value; load(); });
+$("zoom").addEventListener("change", () => { state.zoom = $("zoom").value; writeHash(); if (state.map) drawHeat(); });
+$("showplan").addEventListener("change", () => { state.plan = $("showplan").checked; if (state.map) drawHeat(); });
+$("metric").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  state.metric = b.dataset.v; syncControls(); writeHash(); if (state.map) render();
+});
+let rz;
+addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => state.map && (drawHeat(), drawProfile()), 120); });
+addEventListener("scroll", hideTip, { passive: true });
+addEventListener("hashchange", () => {
+  const before = state.symbol + state.dte;
+  readHash(); syncControls();
+  if (state.symbol + state.dte !== before) load(); else if (state.map) render();
+});
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => state.map && render());
+
+(async function init() {
+  readHash(); syncControls();
+  try {
+    const syms = await getJSON("/api/symbols");
+    $("symlist").innerHTML = syms.map((s) => `<option value="${esc(s)}">`).join("");
+    $("chips").innerHTML = syms.map((s) => `<button type="button">${esc(s)}</button>`).join("");
+    $("chips").addEventListener("click", (e) => {
+      const b = e.target.closest("button"); if (!b) return;
+      state.symbol = b.textContent; syncControls(); load();
+    });
+    if (!state.symbol && syms.length) state.symbol = syms.includes("SPY") ? "SPY" : syms[0];
+  } catch (_) { /* symbols are a convenience */ }
+  syncControls();
+  load();
+})();
+</script>
+</body>
+</html>

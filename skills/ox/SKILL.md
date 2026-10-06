@@ -86,6 +86,7 @@ the write-up.
 |---|---|
 | One-shot summary | `ox overview SYM --json` — spot, IV30, per-expiry ATM IV / straddle / 1σ move / max pain / P/C, GEX levels |
 | Gamma levels | `ox gex SYM [--dte N] [--rows 40] --json` — `zero_gamma`, `call_wall`, `put_wall`, per-strike GEX, `profile` |
+| GEX heatmap | `ox gex SYM --map [--dte N] --json` — `gex` (the report above), `grid` (strikes ±25% × `expiries`; `call_gex`/`put_gex`/`call_oi`/`put_oi` as `[expiry][strike]`, net = call + put), `read` (where spot sits vs zero gamma, how much gamma rolls off within 7 days, the largest nodes). `ox serve` opens it as a browser page for the user, with the `ox pick` plan drawn on it |
 | Chain for one expiry | `ox chain SYM --dte N` or `--exp YYYY-MM-DD` `[--strikes 15] --json` |
 | Quotes | `ox quote SYM ... --json` |
 | Support / resistance | `ox levels SYM --json` — confluence levels with `strength` and `sources`, plus session levels and gap |

@@ -212,6 +212,93 @@ pub async fn gex(client: &Client, symbol: String, max_dte: Option<u32>, rows: us
     Ok(())
 }
 
+/// Expirations shown as columns in the terminal heatmap.
+const MAP_COLUMNS: usize = 10;
+
+pub async fn gex_map(client: &Client, symbol: String, max_dte: Option<u32>, rows: usize, json: bool) -> Result<()> {
+    let m = expect!(client.call(Request::GexMap { symbol, max_dte }).await?, Response::GexMap)?;
+    if json {
+        return print_json(&m);
+    }
+    let (g, grid) = (&m.gex, &m.grid);
+    println!(
+        "{} {}  GEX {} per 1%  ({} expirations{})   {}",
+        bold(&g.underlying),
+        price(g.spot),
+        by_sign(g.total_gex, &signed_big(g.total_gex)),
+        g.expirations,
+        max_dte.map(|d| format!(", ≤{d} DTE")).unwrap_or_default(),
+        source_line("cboe", true, &g.freshness)
+    );
+    for line in &m.read {
+        println!("  {}", dim(line));
+    }
+    let cols = grid.expiries.len().min(MAP_COLUMNS);
+    let net = |e: usize, k: usize| grid.call_gex[e][k] + grid.put_gex[e][k];
+    let center = grid.strikes.iter().position(|k| *k >= g.spot).unwrap_or(grid.strikes.len());
+    let lo = center.saturating_sub(rows / 2);
+    let hi = (center + rows / 2).min(grid.strikes.len());
+    let nearest =
+        (lo..hi).min_by(|a, b| (grid.strikes[*a] - g.spot).abs().total_cmp(&(grid.strikes[*b] - g.spot).abs()));
+    let max = (lo..hi).flat_map(|k| (0..cols).map(move |e| (e, k))).map(|(e, k)| net(e, k).abs()).fold(0.0, f64::max);
+    if max == 0.0 {
+        println!("no open interest near spot");
+        return Ok(());
+    }
+
+    print!("\n{:>9}", "");
+    for e in &grid.expiries[..cols] {
+        print!(" {:>6}", e.expiry.format("%m-%d").to_string());
+    }
+    println!();
+    for k in (lo..hi).rev() {
+        if (0..cols).all(|e| net(e, k).abs() < max * 0.02) && Some(k) != nearest {
+            continue;
+        }
+        let s = grid.strikes[k];
+        let mut tags = Vec::new();
+        if Some(s) == g.call_wall {
+            tags.push("CALL WALL");
+        }
+        if Some(s) == g.put_wall {
+            tags.push("PUT WALL");
+        }
+        let spot_row = Some(k) == nearest;
+        if spot_row {
+            tags.push("◀ SPOT");
+        }
+        let label = format!("{:>8}", strike(s));
+        print!("{} ", if spot_row { paint("1;7", &label) } else { label });
+        for e in 0..cols {
+            print!(" {}", heat_cell(net(e, k), max));
+        }
+        println!(" {}", bold(&tags.join(" ")));
+    }
+    println!(
+        "{}",
+        dim("  blue = dealers long gamma (positive), red = short gamma (negative); intensity ~ sqrt(|GEX|)")
+    );
+    Ok(())
+}
+
+/// A 6-wide cell shaded on a blue (positive) / red (negative) ramp from a neutral gray.
+fn heat_cell(v: f64, max: f64) -> String {
+    let text = if v.abs() < max * 0.02 { String::new() } else { signed_big(v) };
+    if !color() {
+        return format!("{text:>6}");
+    }
+    let a = (v.abs() / max).sqrt();
+    let (mid, hot) = ((56.0, 56.0, 53.0), if v >= 0.0 { (57.0, 135.0, 229.0) } else { (230.0, 103.0, 103.0) });
+    let mix = |m: f64, h: f64| (m + (h - m) * a).round() as u8;
+    let fg = if a > 0.55 { "16" } else { "252" };
+    format!(
+        "\x1b[48;2;{};{};{}m\x1b[38;5;{fg}m{text:>6}\x1b[0m",
+        mix(mid.0, hot.0),
+        mix(mid.1, hot.1),
+        mix(mid.2, hot.2)
+    )
+}
+
 pub async fn overview(client: &Client, symbol: String, json: bool) -> Result<()> {
     let o = expect!(client.call(Request::Overview { symbol }).await?, Response::Overview)?;
     if json {

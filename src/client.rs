@@ -24,8 +24,16 @@ impl Client {
         let path = socket_path();
         if !local_only && path.exists() {
             let c = Client::Daemon(path);
-            if tokio::time::timeout(Duration::from_millis(500), c.call(Request::Ping)).await.is_ok_and(|r| r.is_ok()) {
-                return Ok(c);
+            match tokio::time::timeout(Duration::from_millis(500), c.call(Request::Ping)).await {
+                Ok(Ok(Response::Pong(s))) if s.version == env!("CARGO_PKG_VERSION") => return Ok(c),
+                // An older (or newer) daemon may not understand this version's requests.
+                Ok(Ok(Response::Pong(s))) => eprintln!(
+                    "note: oxd {} is running but this is ox {}; running in-process. \
+                     Restart it with `ox daemon start`.",
+                    s.version,
+                    env!("CARGO_PKG_VERSION")
+                ),
+                _ => {}
             }
         }
         Ok(Client::Local(Engine::new(cfg.clone())?))
@@ -37,6 +45,9 @@ impl Client {
             Client::Daemon(path) => daemon_call(path, &req).await?,
         };
         match resp {
+            Response::Error(e) if e.starts_with("bad request") => {
+                Err(anyhow!("{e} (oxd may be from another ox version; restart it with `ox daemon start`)"))
+            }
             Response::Error(e) => Err(anyhow!(e)),
             r => Ok(r),
         }

@@ -115,6 +115,8 @@ Every command accepts `--json`.
 ox levels NVDA          # support/resistance by confluence + prior day, pre-market, overnight, gap
 ox overview SPY         # IV30, expected move per expiry, GEX levels, P/C, max pain
 ox gex SPY --dte 7      # GEX by strike, zero gamma, walls
+ox gex SPY --map        # GEX heatmap by strike and expiration, with a read of it
+ox serve                # the heatmap in a browser, with the pick plan drawn on it
 ox chain NVDA --dte 14  # chain for the first expiry ≥ 14 days out
 ox quote SPY QQQ IWM
 ox earnings NVDA GOOG   # next earnings dates (estimated until the company confirms)
