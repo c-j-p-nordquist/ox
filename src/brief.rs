@@ -18,7 +18,6 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::analytics::market::{self, Session};
-use crate::analytics::pick::Verdict;
 use crate::analytics::review::{Action, ReviewReport};
 use crate::analytics::risk::{MarketContext, RiskReport};
 use crate::analytics::{self, levels};
@@ -82,13 +81,13 @@ pub struct Brief {
     pub movers: Vec<String>,
     /// Symbols reporting earnings within the next 7 days.
     pub earnings_soon: Vec<String>,
-    /// `ox review`: holdings, candidates with an edge, replacements.
+    /// `ox review`: each holding, HOLD or CLOSE.
     #[serde(default)]
     pub review: Option<ReviewReport>,
     /// What changed in the review since the previous day's brief.
     #[serde(default)]
     pub changes: Vec<String>,
-    /// Reports ahead for positions and candidates (next 30 days), soonest first.
+    /// Reports ahead for positions (next 30 days), soonest first.
     #[serde(default)]
     pub events: Vec<EventRow>,
     /// Symbols that need a catalyst check today, and why.
@@ -123,9 +122,8 @@ pub struct Due {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Snapshot {
     pub date: Option<NaiveDate>,
-    /// Holding → action; candidate → verdict.
+    /// Holding → action.
     pub actions: std::collections::BTreeMap<String, String>,
-    pub verdicts: std::collections::BTreeMap<String, String>,
 }
 
 /// Last two days' snapshots: the brief diffs today's review against the latest earlier day.
@@ -147,7 +145,6 @@ pub fn snapshot(r: &ReviewReport, date: NaiveDate) -> Snapshot {
     Snapshot {
         date: Some(date),
         actions: r.holdings.iter().map(|h| (h.underlying.clone(), label(&h.action))).collect(),
-        verdicts: r.candidates.iter().map(|c| (c.symbol.clone(), label(&c.verdict))).collect(),
     }
 }
 
@@ -169,29 +166,14 @@ pub fn changes(prev: &Snapshot, now: &Snapshot) -> Vec<String> {
     for sym in prev.actions.keys().filter(|s| !now.actions.contains_key(*s)) {
         out.push(format!("{sym}: no longer held"));
     }
-    for (sym, v) in &now.verdicts {
-        match prev.verdicts.get(sym) {
-            Some(p) if p != v => out.push(format!(
-                "{sym}: {} (was {})",
-                v.to_uppercase().replace('_', " "),
-                p.to_uppercase().replace('_', " ")
-            )),
-            None => out.push(format!("{sym}: new candidate, {}", v.to_uppercase().replace('_', " "))),
-            _ => {}
-        }
-    }
-    for sym in prev.verdicts.keys().filter(|s| !now.verdicts.contains_key(*s) && !now.actions.contains_key(*s)) {
-        out.push(format!("{sym}: dropped to NO TRADE ({} before)", prev.verdicts[sym].to_uppercase()));
-    }
     out
 }
 
-/// Reports in the next 30 days for holdings and candidates, with clusters among holdings.
+/// Reports in the next 30 days for holdings, with clusters among them.
 pub fn events(r: &ReviewReport, today: NaiveDate) -> Vec<EventRow> {
     let mut rows: Vec<EventRow> = Vec::new();
     let held = r.holdings.iter().map(|h| (h.underlying.as_str(), "position", h.earnings_move.as_ref()));
-    let cands = r.candidates.iter().map(|c| (c.symbol.as_str(), "candidate", c.earnings_move.as_ref()));
-    for (sym, role, m) in held.chain(cands) {
+    for (sym, role, m) in held {
         let Some(m) = m else { continue };
         let days = (m.date - today).num_days();
         if !(0..=30).contains(&days) {
@@ -250,15 +232,6 @@ pub fn catalyst_due(r: &ReviewReport, ev: &[EventRow], prev: &Snapshot, today: N
             add(&h.underlying, format!("review changed to {}", a.to_uppercase()));
         } else if h.action != Action::Hold && prev.actions.get(&h.underlying).is_none_or(|p| *p != a) {
             add(&h.underlying, format!("review says {}", a.to_uppercase()));
-        }
-    }
-    for x in &r.replacements {
-        add(&x.close, format!("proposed to close for {}", x.open));
-        add(&x.open, format!("proposed to replace {}", x.close));
-    }
-    for c in r.candidates.iter().filter(|c| c.verdict == Verdict::Enter) {
-        if prev.verdicts.get(&c.symbol).is_none_or(|v| v != "enter") {
-            add(&c.symbol, "new ENTER candidate".into());
         }
     }
     if today.weekday() == chrono::Weekday::Mon {
@@ -326,7 +299,7 @@ impl Engine {
         let key = |s: &BriefSymbol| s.move_vs_expected.or(s.change_pct.map(|c| c / 2.0)).unwrap_or(0.0).abs();
         movers.sort_by(|a, b| key(b).total_cmp(&key(a)));
         // The book review, diffed against the previous day's.
-        let review = self.review(Vec::new()).await.ok();
+        let review = self.review().await.ok();
         let mut state: State =
             std::fs::read(state_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let (mut changes_v, mut events_v, mut due_v) = (Vec::new(), Vec::new(), Vec::new());
@@ -440,7 +413,7 @@ mod tests {
     use super::*;
     use crate::analytics::pick::earnings::EarningsMove;
     use crate::analytics::pick::setup::Direction;
-    use crate::analytics::review::{Candidate, Holding};
+    use crate::analytics::review::Holding;
 
     fn d(m: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, m, day).unwrap()
@@ -467,55 +440,31 @@ mod tests {
             market_value: 1000.0,
             unrealized: 0.0,
             min_dte: None,
-            verdict: Verdict::NoTrade,
             headline: String::new(),
             setup: None,
-            has_edge: false,
             earnings_move: e,
             hold: None,
             action,
             reasons: vec![],
-            roll_to: None,
         }
     }
 
-    fn report(h: Vec<Holding>, c: Vec<Candidate>) -> ReviewReport {
-        ReviewReport {
-            as_of: 0,
-            budget: None,
-            holdings: h,
-            candidates: c,
-            replacements: vec![],
-            no_trade: vec![],
-            notes: vec![],
-        }
+    fn report(h: Vec<Holding>) -> ReviewReport {
+        ReviewReport { as_of: 0, budget: None, holdings: h, notes: vec![] }
     }
 
     #[test]
     fn diffs_and_due_list() {
         let today = d(10, 21); // a Wednesday
-        let yesterday = report(vec![holding("GOOG", Action::Hold, None), holding("META", Action::Hold, None)], vec![]);
+        let yesterday = report(vec![holding("GOOG", Action::Hold, None), holding("META", Action::Hold, None)]);
         let prev = snapshot(&yesterday, d(10, 20));
-        let cand = Candidate {
-            symbol: "NFLX".into(),
-            verdict: Verdict::Enter,
-            headline: String::new(),
-            setup: None,
-            robust: false,
-            earnings_move: None,
-            pick: None,
-        };
-        let r = report(
-            vec![
-                holding("GOOG", Action::Close, Some(em(d(10, 28), true))),
-                holding("META", Action::Hold, Some(em(d(10, 28), false))),
-            ],
-            vec![cand],
-        );
+        let r = report(vec![
+            holding("GOOG", Action::Close, Some(em(d(10, 28), true))),
+            holding("META", Action::Hold, Some(em(d(10, 28), false))),
+        ]);
         let now = snapshot(&r, today);
         let ch = changes(&prev, &now);
         assert!(ch.iter().any(|c| c.contains("GOOG: review now says CLOSE (was HOLD)")), "{ch:?}");
-        assert!(ch.iter().any(|c| c.contains("NFLX: new candidate, ENTER")), "{ch:?}");
         let ev = events(&r, today);
         assert_eq!(ev.len(), 2);
         assert_eq!(ev[0].cluster, vec!["META".to_string()]);
@@ -523,9 +472,8 @@ mod tests {
         let goog = due.iter().find(|x| x.symbol == "GOOG").unwrap();
         assert!(goog.reasons.iter().any(|r| r.contains("reports 2026-10-28 (7 days), date unconfirmed")), "{goog:?}");
         assert!(goog.reasons.iter().any(|r| r.contains("review changed to CLOSE")), "{goog:?}");
-        assert!(due.iter().any(|x| x.symbol == "NFLX"));
         // A quiet day: nothing due, nothing changed.
-        let quiet = report(vec![holding("GOOG", Action::Hold, None)], vec![]);
+        let quiet = report(vec![holding("GOOG", Action::Hold, None)]);
         let s = snapshot(&quiet, today);
         let p = Snapshot { date: Some(d(10, 20)), ..s.clone() };
         assert!(changes(&p, &s).is_empty());

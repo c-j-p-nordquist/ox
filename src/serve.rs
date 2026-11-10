@@ -93,7 +93,6 @@ async fn handle(stream: TcpStream, port: u16, client: &Client, cfg: &Config) -> 
                         stop: None,
                         t1: None,
                         t2: None,
-                        force_contracts: false,
                         contracts: ContractParams {
                             commission: cfg.costs.commission_per_contract,
                             ..Default::default()

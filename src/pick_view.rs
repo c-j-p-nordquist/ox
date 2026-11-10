@@ -1,4 +1,5 @@
-//! The default `ox pick` view: the verdict, why, and the plan against the levels on one screen.
+//! The default `ox pick` view: where the plan stands, its odds at random, the plan against the
+//! levels and the contracts, on one screen.
 //! `--verbose` prints the full report (`cli::pick`), `--json` the data.
 
 use std::fmt::Write;
@@ -7,9 +8,9 @@ use chrono::{DateTime, Datelike};
 
 use crate::analytics::legs::Side;
 use crate::analytics::pick::contracts::Pick;
-use crate::analytics::pick::setup::{PlanLevel, Setup, SetupKind};
+use crate::analytics::pick::setup::{PlanLevel, Setup};
 use crate::analytics::pick::zones::Zone;
-use crate::analytics::pick::{PickReport, Verdict};
+use crate::analytics::pick::{PickReport, State};
 use crate::cli::{bold, by_sign, dim, green, paint, red, sizing_line, yellow};
 use crate::fmt::{price, strike};
 
@@ -78,46 +79,22 @@ fn short_basis(basis: &str) -> String {
     }
 }
 
-/// One-line evidence for a setup: sample, expectancy, and the margin over its control.
-fn evidence(s: &Setup) -> String {
-    let bt = &s.backtest;
-    let control = if bt.control == "trend_only" { "entering on any day in the trend" } else { "entering on any day" };
-    format!(
-        "{} past signals (~{:.0} independent) averaged {:+.2}R, {:+.2}R more than {control} (t {:.1})",
-        bt.signals.trades, bt.effective_n, bt.signals.expectancy_r, bt.excess_r, bt.t_excess
-    )
-}
-
-fn edge_tag(s: &Setup) -> String {
-    match (s.robust, s.has_edge) {
-        (true, _) => green("robust edge"),
-        (false, true) => yellow("tentative edge"),
-        _ => red("no edge"),
-    }
-}
-
 pub fn render(r: &PickReport) -> String {
     let mut o = String::new();
     header(&mut o, r);
-    verdict(&mut o, r);
+    state(&mut o, r);
     if let Some(lead) = r.setups.first() {
         ladder(&mut o, r, lead);
     }
     if let Some(c) = &r.contracts {
         contracts(&mut o, r, c);
     }
-    if !r.replace.is_empty() {
-        let _ = writeln!(o, "\n{}", bold("The book can't fund this; worth swapping out"));
-        for x in &r.replace {
-            o.push_str(&crate::cli::replacement_text(x));
-        }
-    }
-    let mut more = vec!["--verbose for the backtests, evidence and every contract"];
-    if r.contracts.is_none() && !r.setups.is_empty() {
-        more.push("--contracts to price the plan anyway");
-    }
-    let _ = writeln!(o, "\n{}", dim(&more.join(" · ")));
-    let _ = writeln!(o, "{}", dim("Statistics from past prices, not investment advice. Past edges can stop working."));
+    let _ = writeln!(o, "\n{}", dim("--verbose for every plan, its history and every contract"));
+    let _ = writeln!(
+        o,
+        "{}",
+        dim("Odds if the stock moves at random, from past volatility. Not a recommendation: ox assumes no edge.")
+    );
     o
 }
 
@@ -153,78 +130,52 @@ fn header(o: &mut String, r: &PickReport) {
     let _ = writeln!(o, "{}", dim(&sub.join(" · ")));
 }
 
-fn verdict(o: &mut String, r: &PickReport) {
-    let badge = match r.verdict {
-        Verdict::Enter => paint("1;7;32", " ENTER "),
-        Verdict::Wait => paint("1;7;33", " WAIT "),
-        Verdict::NoTrade => paint("1;7;31", " NO TRADE "),
+fn state(o: &mut String, r: &PickReport) {
+    let badge = match r.state {
+        State::AtEntry => paint("1;7;36", " AT ENTRY "),
+        State::Waiting => paint("1;7;33", " WAITING "),
+        State::NoPlan => paint("1;7;90", " NO PLAN "),
     };
-    let lead = r.setups.first();
-    let pad = " ".repeat(match r.verdict {
-        Verdict::Enter => 8,
-        Verdict::Wait => 7,
-        Verdict::NoTrade => 11,
-    });
     let _ = writeln!(o);
-    match (r.verdict, lead) {
-        (Verdict::NoTrade, Some(_)) => {
-            let _ = writeln!(o, "{badge} no setup has a measured edge right now");
-        }
-        (Verdict::NoTrade, None) => {
-            let _ = writeln!(o, "{badge} no proven levels near {} to build a plan from", price(r.spot));
-        }
-        (_, Some(s)) => {
-            let at = if r.verdict == Verdict::Enter && matches!(s.kind, SetupKind::TrendNow | SetupKind::TrendUnderZone)
-            {
-                " at market"
-            } else {
-                ""
-            };
-            let _ = writeln!(o, "{badge} {}{at}  {}", bold(&s.name), edge_tag(s));
-            match (r.verdict, at.is_empty()) {
-                (Verdict::Wait, _) => {
-                    let _ = writeln!(o, "{pad}wait for: {}", s.trigger);
-                }
-                (_, true) => {
-                    let _ = writeln!(o, "{pad}triggered: {}", s.trigger);
-                }
-                _ => {}
-            }
-        }
-        (_, None) => {}
+    let Some(s) = r.setups.first() else {
+        let _ = writeln!(o, "{badge} no levels near {} to build a plan from", price(r.spot));
+        return;
+    };
+    let side = if s.direction.d() > 0.0 { "long" } else { "short" };
+    let _ = writeln!(o, "{badge} {} {}", bold(&s.name), dim(&format!("· {side}")));
+    let bt = &s.backtest;
+    let pc = |x: f64| format!("{:.0}%", x * 100.0);
+    // The simulated rate (it includes the time stop) when contracts were priced, else the
+    // distance ratio from where the plan is entered.
+    let p0 = r.contracts.as_ref().map_or(s.p_t1_random, |c| c.p_t1_no_edge);
+    let mut lines: Vec<String> = Vec::new();
+    if r.state == State::Waiting {
+        lines.push(format!("waiting for: {}", s.trigger));
     }
-
-    // Why: the evidence for a trade, or each setup's reason for not being one.
-    let mut why: Vec<String> = Vec::new();
-    match (r.verdict, lead) {
-        (Verdict::NoTrade, _) => {
-            if r.bias.is_none() {
-                why.push(format!("no trend to lean on ({}): only fades at the range edges qualify", r.regime.trend));
-            }
-            for s in r.setups.iter().take(3) {
-                if let Some(w) = s.why_not_now.last() {
-                    why.push(format!("{}: {w}", bold(&s.name)));
-                }
-            }
-        }
-        (_, Some(s)) => {
-            why.push(evidence(s));
-            if !s.edge_source.is_empty() {
-                why.push(format!("edge source: {}", s.edge_source));
-            }
-            let prefix = format!("{}: ", s.name);
-            why.extend(r.why_not_now.iter().filter_map(|w| w.strip_prefix(&prefix)).map(String::from));
-            why.extend(
-                s.why.iter().filter(|w| w.starts_with("earnings") || w.starts_with("past signals held")).cloned(),
-            );
-        }
-        _ => {}
+    lines.push(format!(
+        "{}: T1 {} comes before the stop {} {} of the time, for 0R on average before costs",
+        bold("at random"),
+        price(s.t1.price),
+        price(s.sl.price),
+        pc(p0)
+    ));
+    if bt.any_day.trades >= 8 {
+        lines.push(format!(
+            "{}: the same plan entered on any day in its history got T1 first {} of the time and averaged {:+.2}R ({} entries)",
+            bold("this stock"),
+            pc(bt.any_day.p_t1),
+            bt.any_day.expectancy_r,
+            bt.any_day.trades
+        ));
     }
-    for w in why {
+    lines.push("no edge is assumed: the reason to take the trade has to be your own".into());
+    lines.extend(s.why.iter().filter(|w| w.starts_with("earnings")).cloned());
+    for w in lines {
         let _ = writeln!(o, "{}", wrap(&format!("  {} ", dim("•")), &w, 4));
     }
-    if r.verdict == Verdict::NoTrade && r.setups.len() > 3 {
-        let _ = writeln!(o, "  {}", dim(&format!("+{} more setups in --verbose", r.setups.len() - 3)));
+    if r.setups.len() > 1 {
+        let n = r.setups.len() - 1;
+        let _ = writeln!(o, "  {}", dim(&format!("+{n} more plan{} in --verbose", if n == 1 { "" } else { "s" })));
     }
     for w in &r.warnings {
         let _ = writeln!(o, "  {} {w}", yellow("!"));
@@ -235,7 +186,7 @@ fn verdict(o: &mut String, r: &PickReport) {
 fn ladder(o: &mut String, r: &PickReport, s: &Setup) {
     struct Row {
         price: f64,
-        zone: Option<(bool, bool)>, // (is resistance, proven)
+        zone: Option<bool>, // is resistance
         desc: String,
         tags: Vec<&'static str>,
         spot: bool,
@@ -243,13 +194,7 @@ fn ladder(o: &mut String, r: &PickReport, s: &Setup) {
     let mut rows: Vec<Row> = Vec::new();
     for (z, res) in r.resistances.iter().take(3).map(|z| (z, true)).chain(r.supports.iter().take(3).map(|z| (z, false)))
     {
-        rows.push(Row {
-            price: z.price,
-            zone: Some((res, z.proven() > 0)),
-            desc: short_desc(z),
-            tags: vec![],
-            spot: false,
-        });
+        rows.push(Row { price: z.price, zone: Some(res), desc: short_desc(z), tags: vec![], spot: false });
     }
     rows.push(Row { price: r.spot, zone: None, desc: String::new(), tags: vec![], spot: true });
     let plan: [(&'static str, Option<&PlanLevel>); 5] =
@@ -260,16 +205,15 @@ fn ladder(o: &mut String, r: &PickReport, s: &Setup) {
             Some(row) => row.tags.push(tag),
             None => {
                 let desc = l.zone.as_ref().map_or_else(|| short_basis(&l.basis), short_desc);
-                let zone = l.zone.as_ref().map(|z| (z.price > r.spot, z.proven() > 0));
+                let zone = l.zone.as_ref().map(|z| z.price > r.spot);
                 rows.push(Row { price: l.price, zone, desc, tags: vec![tag], spot: false });
             }
         }
     }
     rows.sort_by(|a, b| b.price.total_cmp(&a.price));
-    let any_proven = rows.iter().any(|r| matches!(r.zone, Some((_, true))));
 
     let risk = s.risk_per_share;
-    let title = if r.verdict == Verdict::NoTrade { "Closest plan" } else { "Plan" };
+    let title = "Plan";
     let _ = writeln!(
         o,
         "\n{}  {}",
@@ -299,9 +243,9 @@ fn ladder(o: &mut String, r: &PickReport, s: &Setup) {
         }
         let pct = (row.price / r.spot - 1.0) * 100.0;
         let mark = match row.zone {
-            Some((true, proven)) => red(if proven { "R★" } else { "R " }),
-            Some((false, proven)) => green(if proven { "S★" } else { "S " }),
-            None => "  ".into(),
+            Some(true) => red("R"),
+            Some(false) => green("S"),
+            None => " ".into(),
         };
         let _ = writeln!(
             o,
@@ -311,9 +255,6 @@ fn ladder(o: &mut String, r: &PickReport, s: &Setup) {
             yellow(&format!("{tags:<5}")),
             dim(&fit_sources(&row.desc, DESC))
         );
-    }
-    if any_proven {
-        let _ = writeln!(o, "  {}", dim("★ a level type that has held more often than control levels on this stock"));
     }
 }
 
@@ -342,7 +283,8 @@ fn contracts(o: &mut String, r: &PickReport, c: &crate::analytics::pick::contrac
         "\n{}  {}",
         bold("Contracts"),
         dim(&format!(
-            "for {lead} · {} · per contract, after spread and commission",
+            "for {lead}, if {} moves at random · {} · per contract, after spread and commission",
+            r.symbol,
             if live { "live quotes" } else { "delayed quotes" }
         ))
     );
@@ -357,8 +299,8 @@ fn contracts(o: &mut String, r: &PickReport, c: &crate::analytics::pick::contrac
         o,
         "{}",
         dim(&format!(
-            "  {:>1}  {:<18} {:<6} {:<14} {:>8} {:>8} {:>7} {:>9} {:>5}",
-            "#", "structure", "exp", "legs", "price", "max loss", "EV", "no-edge", "P>0"
+            "  {:>1}  {:<18} {:<6} {:<14} {:>8} {:>8} {:>7} {:>7} {:>7} {:>6} {:>6}",
+            "#", "structure", "exp", "legs", "price", "max loss", "random", "if T1", "if not", "needs", "edge"
         ))
     );
     for (i, p) in c.picks.iter().take(3).enumerate() {
@@ -366,16 +308,18 @@ fn contracts(o: &mut String, r: &PickReport, c: &crate::analytics::pick::contrac
             if p.net_at_entry >= 0.0 { format!("{:.2}", p.net_at_entry) } else { format!("{:.2}cr", -p.net_at_entry) };
         let _ = writeln!(
             o,
-            "  {}  {:<18} {:<6} {:<14} {:>8} {:>8.0} {} {} {:>4.0}%",
+            "  {}  {:<18} {:<6} {:<14} {:>8} {:>8.0} {} {} {} {:>5.0}% {}",
             i + 1,
             p.structure.label(),
             p.expiry.format("%b %-d").to_string(),
             legs(p),
             net,
             p.max_loss,
-            by_sign(p.ev, &format!("{:>+7.0}", p.ev)),
-            by_sign(p.ev_no_edge, &format!("{:>+9.0}", p.ev_no_edge)),
-            p.p_profit * 100.0
+            by_sign(p.ev_no_edge, &format!("{:>+7.0}", p.ev_no_edge)),
+            by_sign(p.ev_if_t1, &format!("{:>+7.0}", p.ev_if_t1)),
+            by_sign(p.ev_if_not, &format!("{:>+7.0}", p.ev_if_not)),
+            p.breakeven_p_t1 * 100.0,
+            by_sign(-p.edge_needed, &format!("{:>+4.0}pt", p.edge_needed * 100.0))
         );
         let _ = writeln!(o, "     {}", dim(p.why.split(';').next().unwrap_or(&p.why)));
     }
@@ -387,11 +331,11 @@ fn contracts(o: &mut String, r: &PickReport, c: &crate::analytics::pick::contrac
         let _ = writeln!(o, "  #1 {}", sizing_line(s));
     }
     let _ = writeln!(o, "{}", wrap(&format!("  {} ", dim("exit:")), &p.exit_plan, 8));
-    let _ = writeln!(
-        o,
-        "  {}",
-        dim("EV uses the plan's backtested hit rate; no-edge is the same contract if the stock moves randomly")
+    let legend = format!(
+        "random: expected result if the stock moves at random · needs: how often T1 must come before the stop to break even · edge: that minus the {:.0}% it happens at random (shares need +0pt)",
+        c.p_t1_no_edge * 100.0
     );
+    let _ = writeln!(o, "{}", dim(&wrap("  ", &legend, 2)));
 }
 
 #[cfg(test)]
@@ -411,7 +355,7 @@ mod tests {
             short_basis("beyond fib 0.382 213.35 + 100d SMA 213.87 by 0.5 ATR"),
             "0.5 ATR beyond fib 0.382 + 100d SMA"
         );
-        assert_eq!(short_basis("1.5R projection: no zone ahead with a measured hold rate"), "1.5R projection");
+        assert_eq!(short_basis("1.5R projection: no level ahead"), "1.5R projection");
         assert_eq!(
             short_basis("beyond the B1 zone by 0.5 ATR: a close there means the level failed"),
             "0.5 ATR beyond the B1 zone"

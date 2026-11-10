@@ -852,9 +852,6 @@ pub async fn brief(client: &Client, json: bool, html: Option<String>, notes: Opt
                 dim(h.reasons.first().map_or("", |s| s.as_str()))
             );
         }
-        for x in &r.replacements {
-            replacement_line(x);
-        }
     }
     for c in &b.changes {
         println!("  {} {c}", paint("33", "Δ"));
@@ -910,7 +907,7 @@ pub async fn pick(
     json: bool,
 ) -> Result<()> {
     use crate::analytics::pick::setup::Status;
-    use crate::analytics::pick::Verdict;
+    use crate::analytics::pick::State;
     let r = *expect!(client.call(Request::Pick { symbol, params }).await?, Response::Pick)?;
     if json {
         return print_json(&r);
@@ -937,41 +934,33 @@ pub async fn pick(
         g.vol_pricing,
         gamma
     );
-    let head = match r.verdict {
-        Verdict::Enter => green(&r.headline),
-        Verdict::Wait => paint("33", &r.headline),
-        Verdict::NoTrade => red(&r.headline),
+    let head = match r.state {
+        State::AtEntry => paint("36", &r.headline),
+        State::Waiting => paint("33", &r.headline),
+        State::NoPlan => dim(&r.headline),
     };
     println!("\n{}", bold(&head));
     for w in &r.warnings {
         println!("  {} {w}", paint("33", "!"));
     }
-    println!("\n{}", bold("Thesis"));
+    println!("\n{}", bold("Situation"));
     for t in &r.thesis {
         println!("  • {t}");
     }
     if !r.why_not_now.is_empty() {
-        println!("\n{}", bold("Why not now"));
+        println!("\n{}", bold("Waiting for"));
         for t in &r.why_not_now {
             println!("  • {t}");
         }
     }
 
-    println!("\n{}", bold("Setups"));
+    println!("\n{} {}", bold("Plans"), dim("shapes, not recommendations: none is assumed to have an edge"));
     for (i, s) in r.setups.iter().enumerate() {
-        // ENTER/wait only for a setup with an edge; otherwise just whether its trigger has fired.
-        let status = match (s.status, s.has_edge) {
-            (Status::Enter, true) => green("ENTER"),
-            (Status::Wait, true) => paint("33", "wait"),
-            (Status::Enter, false) => dim("triggered"),
-            (Status::Wait, false) => dim("not triggered"),
+        let status = match s.status {
+            Status::Enter => paint("36", "at entry"),
+            Status::Wait => dim("waiting"),
         };
-        let edge = match (s.robust, s.has_edge) {
-            (true, _) => green("edge, robust"),
-            (false, true) => paint("33", "edge, tentative"),
-            _ => red("no edge"),
-        };
-        println!(" {} {}  [{status}] [{edge}]  score {:+.2}R", i + 1, bold(&s.name), s.score);
+        println!(" {} {}  [{status}]", i + 1, bold(&s.name));
         println!("   {} {}", dim("trigger"), s.trigger);
         let lvl = |tag: &str, l: &crate::analytics::pick::setup::PlanLevel, extra: String| {
             println!("   {:<3} {:>9}  {}{}", tag, price(l.price), dim(&l.basis), extra);
@@ -986,21 +975,20 @@ pub async fn pick(
         let bt = &s.backtest;
         let pc = |x: f64| format!("{:.0}%", x * 100.0);
         println!(
-            "   {} {} signals (~{:.0} independent){} · T1 first {} (no-edge {}) · T2 {} · stopped {} · {:+.2}R ({:+.2}R shrunk, t {:.1}) · {:+.2}R over {} (t {:.1}) · trend-only {:+.2}R, any day {:+.2}R · ~{:.0}d to T1, ~{:.0}d to T2 · time stop {}d",
+            "   {} T1 before the stop {} of the time, 0R on average before costs",
+            dim("at random"),
+            pc(s.p_t1_random)
+        );
+        println!(
+            "   {} {} signals (~{:.0} independent){} · T1 first {} · T2 {} · stopped {} · {:+.2}R · in the same trend {:+.2}R, any day {:+.2}R · ~{:.0}d to T1, ~{:.0}d to T2 · time stop {}d",
             dim("history"),
             bt.signals.trades,
             bt.effective_n,
             bt.first_signal.map_or(String::new(), |d| format!(" since {d}")),
             pc(bt.signals.p_t1),
-            pc(bt.no_edge_p_t1),
             pc(bt.signals.p_t2),
             pc(bt.signals.p_stop),
             bt.signals.expectancy_r,
-            bt.expectancy_r_shrunk,
-            bt.t_stat,
-            bt.excess_r,
-            bt.control.replace('_', "-"),
-            bt.t_excess,
             bt.trend_only.expectancy_r,
             bt.any_day.expectancy_r,
             s.days_to_t1,
@@ -1008,7 +996,11 @@ pub async fn pick(
             bt.hold_days
         );
         if i == 0 {
-            for w in s.why.iter().filter(|w| !w.starts_with("history:") && !w.starts_with("trend:")) {
+            for w in s
+                .why
+                .iter()
+                .filter(|w| !w.starts_with("history:") && !w.starts_with("trend:") && !w.starts_with("at random:"))
+            {
                 println!("   {} {}", dim("·"), dim(w));
             }
         }
@@ -1024,10 +1016,10 @@ pub async fn pick(
             "\n{} {}",
             bold(&format!("Contracts for {lead}")),
             dim(&format!(
-                "entry {} · sim vol {:.0}% · drift set to P(T1 first) {:.0}% · time stop {} · expiries ≥ {}",
+                "entry {} · random paths at {:.0}% vol, T1 first {:.0}% · time stop {} · expiries ≥ {}",
                 price(c.entry),
                 c.sim_vol * 100.0,
-                c.target_p_t1 * 100.0,
+                c.p_t1_no_edge * 100.0,
                 c.time_stop,
                 c.min_expiry
             ))
@@ -1041,16 +1033,18 @@ pub async fn pick(
         println!(
             "{}",
             dim(&format!(
-                "{:>2} {:<18} {:<6} {:<24} {:>7} {:>8} {:>7} {:>6} {:>8} {:>5} {:>7} {:>7} {:>7} {:>7} {:>6} {:>6}",
+                "{:>2} {:<18} {:<6} {:<24} {:>7} {:>8} {:>8} {:>7} {:>7} {:>6} {:>6} {:>5} {:>7} {:>7} {:>7} {:>7} {:>6} {:>6}",
                 "#",
                 "structure",
                 "exp",
                 "legs",
                 "limit",
                 "max loss",
-                "EV",
-                "EV/R",
-                "no-edge",
+                "random",
+                "if T1",
+                "if not",
+                "needs",
+                "edge",
                 "P>0",
                 "@SL",
                 "@T1",
@@ -1082,16 +1076,18 @@ pub async fn pick(
             };
             let sgn = |x: f64| by_sign(x, &format!("{x:>+7.0}"));
             println!(
-                "{:>2} {:<18} {:<6} {:<24} {:>7} {:>8.0} {} {:>6.2} {} {:>4.0}% {} {} {} {} {:>+6.0} {:>+6.1}",
+                "{:>2} {:<18} {:<6} {:<24} {:>7} {:>8.0} {} {} {} {:>5.0}% {} {:>4.0}% {} {} {} {} {:>+6.0} {:>+6.1}",
                 i + 1,
                 p.structure.label(),
                 p.expiry.format("%m-%d").to_string(),
                 legs.join(" "),
                 net,
                 p.max_loss,
-                sgn(p.ev),
-                p.ev_on_risk,
                 by_sign(p.ev_no_edge, &format!("{:>+8.0}", p.ev_no_edge)),
+                sgn(p.ev_if_t1),
+                sgn(p.ev_if_not),
+                p.breakeven_p_t1 * 100.0,
+                by_sign(-p.edge_needed, &format!("{:>+5.0}pt", p.edge_needed * 100.0)),
                 p.p_profit * 100.0,
                 sgn(p.pnl_at_sl),
                 sgn(p.pnl_at_t1),
@@ -1117,29 +1113,16 @@ pub async fn pick(
         } else {
             println!(
                 "{}",
-                dim(&format!("{} structures evaluated · $ per unit · EV after spread and commission", c.evaluated))
+                dim(&format!(
+                    "{} structures evaluated · $ per unit after spread and commission · random: expected if the stock moves at random · needs: share of the time T1 must come first to break even · edge: that minus the random rate",
+                    c.evaluated
+                ))
             );
         }
     }
-    if !r.replace.is_empty() {
-        println!("\n{}", bold("The book can't fund this; worth swapping out"));
-        for x in &r.replace {
-            replacement_line(x);
-        }
-    }
-
     println!("\n{}", bold("Zones"));
     let zone = |z: &crate::analytics::pick::zones::Zone, tag: &str| {
-        let proven = z.proven();
-        println!(
-            "  {} {:>9} {:>+5.1} ATR  strength {:.2}{}  {}",
-            tag,
-            price(z.price),
-            (z.price - r.spot) / g.atr,
-            z.strength,
-            if proven > 0 { format!(" ({proven} proven)") } else { String::new() },
-            dim(&z.describe())
-        );
+        println!("  {} {:>9} {:>+5.1} ATR  {}", tag, price(z.price), (z.price - r.spot) / g.atr, dim(&z.describe()));
     };
     for z in r.resistances.iter().rev() {
         zone(z, &red("R"));
@@ -1151,9 +1134,9 @@ pub async fn pick(
     {
         println!(
             "\n{} {}",
-            bold("Level calibration"),
+            bold("Level hold rates"),
             dim(&format!(
-                "{} daily bars from {}",
+                "{} daily bars from {} · pooled over many tickers no source beats control: read as noise",
                 r.history_days,
                 r.history_from.map_or("?".into(), |d| d.to_string())
             ))
@@ -1180,28 +1163,9 @@ pub async fn pick(
     Ok(())
 }
 
-fn replacement_line(x: &crate::analytics::review::Replacement) {
-    print!("{}", replacement_text(x));
-}
-
-pub(crate) fn replacement_text(x: &crate::analytics::review::Replacement) -> String {
-    format!(
-        "  close {} ({}) → open {} {} {} ×{}  gain {} ({} if no edge)\n    {}\n",
-        bold(&x.close),
-        x.close_positions.join(", "),
-        bold(&x.open),
-        x.open_pick.structure.label(),
-        x.open_pick.expiry.format("%m-%d"),
-        x.lots,
-        by_sign(x.gain, &format!("{:+.0}", x.gain)),
-        by_sign(x.gain_no_edge, &format!("{:+.0}", x.gain_no_edge)),
-        dim(&x.why)
-    )
-}
-
-pub async fn review(client: &Client, scan: Vec<String>, json: bool) -> Result<()> {
+pub async fn review(client: &Client, json: bool) -> Result<()> {
     use crate::analytics::review::Action;
-    let r = *expect!(client.call(Request::Review { scan }).await?, Response::Review)?;
+    let r = *expect!(client.call(Request::Review).await?, Response::Review)?;
     if json {
         return print_json(&r);
     }
@@ -1213,13 +1177,11 @@ pub async fn review(client: &Client, scan: Vec<String>, json: bool) -> Result<()
         let action = match h.action {
             Action::Hold => green("HOLD"),
             Action::Close => red("CLOSE"),
-            Action::Roll => paint("33", "ROLL"),
         };
         let ev = h.hold.as_ref().map_or("—".to_string(), |e| {
             format!(
-                "hold EV {} (no edge {}) to {}",
-                by_sign(h.hold_ev(), &format!("{:+.0}", h.hold_ev())),
-                format_args!("{:+.0}", e.ev_no_edge),
+                "holding at random {} to {}",
+                by_sign(e.ev_no_edge, &format!("{:+.0}", e.ev_no_edge)),
                 e.horizon_end
             )
         });
@@ -1235,44 +1197,6 @@ pub async fn review(client: &Client, scan: Vec<String>, json: bool) -> Result<()
         for w in &h.reasons {
             println!("        {}", dim(w));
         }
-        if let Some(p) = &h.roll_to {
-            let legs: Vec<String> = p
-                .legs
-                .iter()
-                .map(|l| {
-                    format!("{}{}{}", if l.side == Side::Buy { "+" } else { "-" }, strike(l.strike), l.right.letter())
-                })
-                .collect();
-            println!(
-                "        roll to {} {} {} @ {:.2}, EV {:+.0}/lot",
-                p.structure.label(),
-                p.expiry,
-                legs.join(" "),
-                p.limit_at_entry,
-                p.ev
-            );
-        }
-    }
-    println!("\n{}", bold("Candidates with a measured edge"));
-    if r.candidates.is_empty() {
-        println!("  {}", dim("none"));
-    }
-    for c in &r.candidates {
-        let fit = match c.pick.as_ref().and_then(|p| p.sizing.as_ref()) {
-            Some(s) if s.contracts > 0 => green(&format!("fits {} lot(s)", s.contracts)),
-            Some(s) => red(s.blocked.as_deref().unwrap_or("blocked")),
-            None => dim("no contract"),
-        };
-        println!("  {} {}  {}", bold(&c.symbol), c.headline, fit);
-    }
-    if !r.replacements.is_empty() {
-        println!("\n{}", bold("Replacements"));
-        for x in &r.replacements {
-            replacement_line(x);
-        }
-    }
-    if !r.no_trade.is_empty() {
-        println!("\n{} {}", dim("no trade:"), dim(&r.no_trade.join(" ")));
     }
     for n in &r.notes {
         println!("{} {}", dim("·"), dim(n));

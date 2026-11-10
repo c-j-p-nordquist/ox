@@ -1,16 +1,17 @@
 //! Contracts for a plan, ranked by simulating the plan itself.
 //!
-//! Price paths start at the plan's entry and move with forecast *realized* volatility, so
-//! the difference between implied and realized vol shows up in the results. The drift is set so
-//! that the chance of reaching T1 before the stop matches the setup's backtest (shrunk toward no
-//! edge). Each path is managed like the plan: half off at T1 with the stop to breakeven, the rest
-//! at T2, everything at the time stop. Every candidate is marked to Black-Scholes at those exit
-//! points (sticky-strike IV, lower after an earnings date), paying half the bid/ask spread and
-//! commission each way.
+//! Price paths start at the plan's entry and move at random: zero drift, forecast *realized*
+//! volatility, so the difference between implied and realized vol shows up in the results. Each
+//! path is managed like the plan: half off at T1 with the stop to breakeven, the rest at T2,
+//! everything at the time stop. Every candidate is marked to Black-Scholes at those exit points
+//! (sticky-strike IV, lower after an earnings date), paying half the bid/ask spread and commission
+//! each way.
 //!
-//! The same paths with zero drift give the no-edge result: what the structure earns if the
-//! setup is worth nothing. A good pick needs a positive result under the plan and a small cost
-//! without the edge.
+//! No plan is assumed to have an edge (see [`super::setup`]), so nothing is simulated "as if the
+//! plan works". Instead each structure gets its expected result at random, the same paths split
+//! by whether T1 came before the stop, and from those the share of the time T1 must come first
+//! for it to break even. That share minus the random-walk rate is the edge the trader has to
+//! bring; the ranking prefers the structure that needs the least.
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use chrono_tz::America::New_York;
@@ -133,12 +134,18 @@ pub struct Pick {
     pub limit_at_entry: f64,
     pub max_loss: f64,
     pub max_gain: Option<f64>,
-    /// Expected P&L per unit under the plan's drift, after friction.
-    pub ev: f64,
-    /// `ev / max_loss`; the ranking key.
-    pub ev_on_risk: f64,
-    /// Expected P&L per unit with zero drift (no edge).
+    /// Expected P&L per unit if the stock moves at random (zero drift), after friction.
     pub ev_no_edge: f64,
+    /// The random paths split by outcome: mean P&L when T1 came before the stop, and when it
+    /// did not.
+    pub ev_if_t1: f64,
+    pub ev_if_not: f64,
+    /// Share of the time T1 must come before the stop for this structure to break even.
+    pub breakeven_p_t1: f64,
+    /// `breakeven_p_t1` minus the random-walk rate: how much better than chance the plan has to
+    /// be. Negative when the structure pays at random. The ranking key, lowest first.
+    pub edge_needed: f64,
+    /// Share of random paths that end with a profit.
     pub p_profit: f64,
     /// P&L per unit at the plan's levels on the days they are expected.
     pub pnl_at_sl: f64,
@@ -167,9 +174,8 @@ pub struct ContractsReport {
     pub entry: f64,
     /// Forecast realized vol used for the paths.
     pub sim_vol: f64,
-    /// Daily log drift that reproduces the backtest's P(T1 before SL).
-    pub sim_drift_daily: f64,
-    pub target_p_t1: f64,
+    /// Share of random (zero-drift) paths on which T1 comes before the stop.
+    pub p_t1_no_edge: f64,
     pub time_stop: NaiveDate,
     pub min_expiry: NaiveDate,
     pub expirations: Vec<NaiveDate>,
@@ -266,40 +272,20 @@ fn manage(p: &Plan, shocks: &[f64], mu: f64, sigma_d: f64, out: &mut Vec<Exit>) 
     hit_t1
 }
 
-/// Simulated exits per path for a given drift; also returns P(T1 before stop).
-fn simulate(p: &Plan, shocks: &[Vec<f64>], mu: f64, sigma_d: f64) -> (Vec<Vec<Exit>>, f64) {
-    let mut hits = 0usize;
+/// Simulated exits per path for a given drift, and whether each path reached T1 before the stop.
+fn simulate(p: &Plan, shocks: &[Vec<f64>], mu: f64, sigma_d: f64) -> (Vec<Vec<Exit>>, Vec<bool>) {
+    let mut hit = Vec::with_capacity(shocks.len());
     let mut all = Vec::with_capacity(shocks.len());
     let mut buf = Vec::new();
     for z in shocks {
-        if manage(p, z, mu, sigma_d, &mut buf) {
-            hits += 1;
-        }
+        hit.push(manage(p, z, mu, sigma_d, &mut buf));
         all.push(buf.clone());
     }
-    (all, hits as f64 / shocks.len() as f64)
+    (all, hit)
 }
 
-/// Drift (daily log) at which simulated P(T1 before stop) equals `target`.
-fn calibrate_drift(p: &Plan, shocks: &[Vec<f64>], sigma_d: f64, target: f64) -> f64 {
-    let (mut lo, mut hi) = (-1.5 * sigma_d, 1.5 * sigma_d);
-    // P(T1 first) increases with drift in the plan's direction.
-    let f = |mu: f64| simulate(p, shocks, p.d * mu, sigma_d).1;
-    if f(hi) < target {
-        return p.d * hi;
-    }
-    if f(lo) > target {
-        return p.d * lo;
-    }
-    for _ in 0..22 {
-        let mid = 0.5 * (lo + hi);
-        if f(mid) < target {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    p.d * 0.5 * (lo + hi)
+fn share(hit: &[bool]) -> f64 {
+    hit.iter().filter(|h| **h).count() as f64 / hit.len().max(1) as f64
 }
 
 struct Cand {
@@ -442,13 +428,11 @@ pub fn rank(
         }
     }
 
-    // Paths: shared shocks for the plan drift and the no-edge drift (common random numbers).
+    // Paths with zero drift: the stock moving at random.
     let sigma_d = sim_vol / 252f64.sqrt();
     let shocks = shocks(PATHS, plan.hold);
-    let target_p = setup.backtest.p_t1_shrunk;
-    let mu = calibrate_drift(&plan, &shocks, sigma_d, target_p);
-    let (paths, _) = simulate(&plan, &shocks, mu, sigma_d);
-    let (flat_paths, _) = simulate(&plan, &shocks, 0.0, sigma_d);
+    let (paths, hit) = simulate(&plan, &shocks, 0.0, sigma_d);
+    let p0 = share(&hit);
 
     // Timestamps per simulated day and per contract expiry, so pricing in the loop is pure math.
     const YEAR: f64 = 365.0 * 86_400.0;
@@ -511,9 +495,18 @@ pub fn rank(
             exits.iter().map(|e| e.frac * (exit_value(e) - net_at_entry) * 100.0).sum::<f64>() - friction
         };
         let pnls: Vec<f64> = paths.iter().map(|x| path_pnl(x)).collect();
-        let ev = pnls.iter().sum::<f64>() / pnls.len() as f64;
+        let ev_no_edge = pnls.iter().sum::<f64>() / pnls.len() as f64;
         let p_profit = pnls.iter().filter(|x| **x > 0.0).count() as f64 / pnls.len() as f64;
-        let ev_no_edge = flat_paths.iter().map(|x| path_pnl(x)).sum::<f64>() / flat_paths.len() as f64;
+        let mean_where = |want: bool| -> Option<f64> {
+            let v: Vec<f64> = pnls.iter().zip(&hit).filter(|(_, h)| **h == want).map(|(x, _)| *x).collect();
+            (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64)
+        };
+        let (ev_if_t1, ev_if_not) = (mean_where(true).unwrap_or(0.0), mean_where(false).unwrap_or(0.0));
+        // A structure that loses money even when T1 comes first is never the pick.
+        if ev_if_t1 <= 0.0 {
+            continue;
+        }
+        let breakeven_p_t1 = breakeven(ev_if_t1, ev_if_not);
         let scen = |price: f64, day: f64| {
             (exit_value(&Exit { day: day.round() as usize, price, frac: 1.0 }) - net_at_entry) * 100.0 - friction
         };
@@ -563,9 +556,11 @@ pub fn rank(
             limit_at_entry: (net_at_entry * 100.0).round() / 100.0,
             max_loss,
             max_gain,
-            ev,
-            ev_on_risk: ev / max_loss,
             ev_no_edge,
+            ev_if_t1,
+            ev_if_not,
+            breakeven_p_t1,
+            edge_needed: breakeven_p_t1 - p0,
             p_profit,
             pnl_at_sl: scen(plan.sl, half_t1),
             pnl_at_t1: scen(plan.t1, setup.days_to_t1),
@@ -581,16 +576,13 @@ pub fn rank(
             sizing: None,
         });
     }
-    picks.sort_by(|a, b| b.ev_on_risk.total_cmp(&a.ev_on_risk));
-    // A structure that loses money even when the plan works is never the pick.
-    let positive = picks.iter().filter(|p| p.ev > 0.0).count();
-    if positive == 0 && !picks.is_empty() {
-        warnings
-            .push("no structure has a positive expected value under the plan; the best is shown for reference".into());
-        picks.truncate(1);
-    } else {
-        picks.truncate(positive);
-    }
+    // Least edge needed first; among equals, the one that costs least at random per dollar risked.
+    let key = |a: &Pick, b: &Pick| {
+        a.edge_needed
+            .total_cmp(&b.edge_needed)
+            .then((b.ev_no_edge / b.max_loss).total_cmp(&(a.ev_no_edge / a.max_loss)))
+    };
+    picks.sort_by(key);
 
     // Variety: the best of each structure first, then the next best overall.
     let mut out: Vec<Pick> = Vec::new();
@@ -608,7 +600,7 @@ pub fn rank(
             out.push(pk.clone());
         }
     }
-    out.sort_by(|a, b| b.ev_on_risk.total_cmp(&a.ev_on_risk));
+    out.sort_by(key);
     for pk in &mut out {
         annotate(pk, setup, &plan, time_stop, earnings, sim_vol, now);
     }
@@ -634,8 +626,7 @@ pub fn rank(
     ContractsReport {
         entry,
         sim_vol,
-        sim_drift_daily: mu,
-        target_p_t1: target_p,
+        p_t1_no_edge: p0,
         time_stop,
         min_expiry,
         expirations,
@@ -657,12 +648,10 @@ pub struct HeldLeg<'a> {
 pub struct HoldEval {
     /// Value of the position now at mid, $.
     pub value_now: f64,
-    /// Expected change in value from holding through the plan's exits instead of closing now, $.
-    /// Both pay the exit spread once, so it nets out. Under the plan's drift (the backtest's
-    /// shrunk P(T1 first)), and with zero drift (no edge).
-    pub ev_plan: f64,
+    /// Expected change in value from holding through the plan's exits instead of closing now, $,
+    /// if the stock moves at random (zero drift). Both pay the exit spread once, so it nets out.
     pub ev_no_edge: f64,
-    /// Share of plan-drift paths that end above today's value.
+    /// Share of random paths that end above today's value.
     pub p_better: f64,
     /// Trading days simulated: the plan's time stop or the first expiry, whichever comes first.
     pub horizon_days: usize,
@@ -672,8 +661,8 @@ pub struct HoldEval {
     pub close_friction: f64,
 }
 
-/// Simulate a held position under the plan's management from today's spot (same paths, drift
-/// calibration and pricing as [`rank`]), capped at the first expiry. `sim_vol` gives the
+/// Simulate a held position under the plan's management from today's spot (same random paths
+/// and pricing as [`rank`]), capped at the first expiry. `sim_vol` gives the
 /// realized-vol forecast for a horizon in trading days.
 #[allow(clippy::too_many_arguments)]
 pub fn hold_value(
@@ -703,9 +692,7 @@ pub fn hold_value(
     };
     let sigma_d = sim_vol(hold) / 252f64.sqrt();
     let shocks = shocks(PATHS, plan.hold);
-    let mu = calibrate_drift(&plan, &shocks, sigma_d, setup.backtest.p_t1_shrunk);
-    let (paths, _) = simulate(&plan, &shocks, mu, sigma_d);
-    let (flat_paths, _) = simulate(&plan, &shocks, 0.0, sigma_d);
+    let (paths, _) = simulate(&plan, &shocks, 0.0, sigma_d);
 
     let leg_value = |l: &HeldLeg, s: f64, day: usize| -> f64 {
         let Some(c) = l.contract else { return s };
@@ -723,8 +710,7 @@ pub fn hold_value(
         exits.iter().map(|e| e.frac * legs.iter().map(|l| l.units * leg_value(l, e.price, e.day)).sum::<f64>()).sum()
     };
     let changes: Vec<f64> = paths.iter().map(|x| path_value(x) - value_now).collect();
-    let ev_plan = changes.iter().sum::<f64>() / changes.len() as f64;
-    let ev_no_edge = flat_paths.iter().map(|x| path_value(x) - value_now).sum::<f64>() / flat_paths.len() as f64;
+    let ev_no_edge = changes.iter().sum::<f64>() / changes.len() as f64;
     let mut theta_day = 0.0;
     let mut close_friction = 0.0;
     for l in legs {
@@ -736,13 +722,24 @@ pub fn hold_value(
     }
     HoldEval {
         value_now,
-        ev_plan,
         ev_no_edge,
         p_better: changes.iter().filter(|x| **x > 0.0).count() as f64 / changes.len() as f64,
         horizon_days: hold,
         horizon_end: trading_to_date(today, hold as f64).min(first_expiry.unwrap_or(NaiveDate::MAX)),
         theta_day,
         close_friction,
+    }
+}
+
+/// Share of the time the winning branch must happen for the two branch means to net to zero.
+/// 0 when the structure earns even on the losing branch, 1 when it cannot break even.
+fn breakeven(ev_if_t1: f64, ev_if_not: f64) -> f64 {
+    if ev_if_not >= 0.0 {
+        0.0
+    } else if ev_if_t1 <= 0.0 {
+        1.0
+    } else {
+        -ev_if_not / (ev_if_t1 - ev_if_not)
     }
 }
 
@@ -788,7 +785,13 @@ fn annotate(
         ),
     };
     if pk.ev_no_edge < -0.15 * pk.max_loss {
-        pk.notes.push(format!("costly without the edge: {:+.0} expected with zero drift", pk.ev_no_edge));
+        pk.notes.push(format!("costly at random: {:+.0} expected with zero drift", pk.ev_no_edge));
+    }
+    if pk.edge_needed <= 0.0 {
+        pk.notes.push(format!(
+            "pays at random only if realized volatility comes in at the {:.0}% forecast, which ox has not verified",
+            sim_vol * 100.0
+        ));
     }
     if pk.structure.is_credit() && pk.max_loss > 3.0 * pk.max_gain.unwrap_or(0.0) {
         pk.notes.push("risks more than 3× the credit".into());
@@ -828,16 +831,21 @@ mod tests {
     }
 
     #[test]
-    fn drift_calibration_hits_target() {
-        let p = plan();
-        let mut rng = Rng(7);
-        let shocks: Vec<Vec<f64>> = (0..2000).map(|_| rng.normals(p.hold + 1)).collect();
-        let sd = 0.4 / 252f64.sqrt();
-        for target in [0.3, 0.5, 0.6] {
-            let mu = calibrate_drift(&p, &shocks, sd, target);
-            let got = simulate(&p, &shocks, mu, sd).1;
-            assert!((got - target).abs() < 0.02, "target {target} got {got} mu {mu}");
-        }
+    fn breakeven_rate() {
+        // Win 300, lose 100: one win pays for three losses.
+        assert!((breakeven(300.0, -100.0) - 0.25).abs() < 1e-12);
+        assert_eq!(breakeven(50.0, 10.0), 0.0);
+        assert_eq!(breakeven(-5.0, -100.0), 1.0);
+    }
+
+    #[test]
+    fn random_walk_hit_rate_matches_the_distances() {
+        // Driftless: T1 before the stop about stop / (stop + t1) of the time, less the paths the
+        // time stop cuts short.
+        let p = Plan { hold: 250, ..plan() };
+        let shocks = super::shocks(4000, p.hold);
+        let got = share(&simulate(&p, &shocks, 0.0, 0.4 / 252f64.sqrt()).1);
+        assert!((got - 5.0 / 15.0).abs() < 0.04, "{got}");
     }
 
     #[test]
@@ -908,12 +916,6 @@ mod tests {
             trend_only: Outcomes::default(),
             any_day: Outcomes::default(),
             effective_n: 0.0,
-            t_stat: 0.0,
-            control: "any_day".into(),
-            excess_r: 0.0,
-            t_excess: 0.0,
-            p_t1_shrunk: 0.33,
-            expectancy_r_shrunk: 0.0,
             hold_days: 30,
             through_earnings: Outcomes::default(),
             without_earnings: Outcomes::default(),
@@ -933,6 +935,7 @@ mod tests {
             risk_per_share: 10.0,
             rr_t1: 2.0,
             rr_t2: 3.0,
+            p_t1_random: 0.33,
             obstacles: vec![],
             backtest: bt,
             days_to_t1: 20.0,
@@ -940,10 +943,6 @@ mod tests {
             why: vec![],
             why_not_now: vec![],
             alerts: vec![],
-            score: 0.0,
-            has_edge: false,
-            edge_source: String::new(),
-            robust: false,
         };
         let exp = NaiveDate::from_ymd_opt(2026, 3, 20).unwrap();
         let price = |iv: f64| bs::value(Right::Call, 100.0, 105.0, bs::years_to_expiry(exp, now), 0.04, iv);

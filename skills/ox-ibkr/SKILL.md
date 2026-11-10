@@ -52,7 +52,7 @@ recommending contracts:
      `isValid: false`). Frozen quotes match what ox already has, so re-check after the open.
 5. Push the live bid/ask and the live underlying as `spot`:
    `echo '{"symbol":"NVDA","source":"ibkr","spot":233.9,"quotes":[{"occ":"NVDA261218C00250000","bid":10.1,"ask":10.4}]}' | ox ingest quotes -`
-   then re-run `ox pick SYM --json`. If the ranking or verdict changed, say so.
+   then re-run `ox pick SYM --json`. If the ranking or the numbers changed, say so.
 
 ## Overnight session
 
@@ -64,9 +64,9 @@ ox has no overnight data of its own. Before a pre-market read:
    `[{"symbol": "NVDA", "source": "ibkr-overnight", "bars": [{"t","o","h","l","c","v"}, ...]}]`
    into `ox ingest overnight -`. `ox levels SYM` then includes the overnight range for 24 hours.
 
-## Alerts for WAIT verdicts
+## Alerts for waiting plans
 
-WAIT verdicts are not staged. Offer IBKR price alerts at the setup's `alerts[]` prices
+A plan whose `state` is `waiting` is not staged. Offer IBKR price alerts at the setup's `alerts[]` prices
 (`create_alert`), and re-run `ox pick` when one fires: triggers need a daily close, so check near
 the close.
 

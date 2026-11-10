@@ -1,35 +1,59 @@
 # ox
 
-**A data-driven answer to "should I trade this, and how?"** Give ox a ticker. It reads the trend,
-finds the support and resistance that has actually held on that stock, builds a trade plan,
-backtests that exact plan against controls, and answers **ENTER**, **WAIT** (with the exact
-trigger) or **NO TRADE**. When there is a trade, it ranks the option contracts that fit the plan.
+**What does this trade cost if I'm wrong about it?** Give ox a ticker and, if you have them, your
+levels. It lays out the plan (entry, stop, two targets), says how often the first target comes
+before the stop if the stock simply moves at random, and ranks option contracts by how much better
+than chance the plan must be for each to break even.
 
-NO TRADE is a real, frequent answer: an edge has to beat simply holding the stock, on enough
-independent trades that it is unlikely to be luck.
+ox does not say whether to trade, and it assumes no plan has an edge. It used to backtest its own
+setups and answer ENTER, WAIT or NO TRADE. An audit over 59 liquid tickers showed why it almost
+always said NO TRADE: its support and resistance levels held no more often than random levels,
+its setups averaged 0R, and one stock's history is too short to show an edge either way. What is
+left is the part that is arithmetic: the odds of a plan at random, and what each way of expressing
+it costs.
 
 ```text
-NVDA  233.95   strong uptrend · IV 29% vs 33% realized (cheap) · above zero γ 202.82
-ATR 5.91 (2.5%) · earnings Nov 18 (est.) in 45d
+NVDA  181.68   downtrend · IV 57% vs 49% realized (fair) · below zero γ 185.70
+ATR 8.39 (4.7%) · earnings Nov 17 in 7d
 
- NO TRADE  no setup has a measured edge right now
-  • trend entry now: +0.65R is no better than entering on any day (+0.75R): it is the stock's past
-    drift, not a signal
-  • pullback long: +0.10R could be luck: t = 0.51 on ~50 independent trades (needs 1.65)
-  ! option quotes are from the last close
+ WAITING  rally short · short
+  • waiting for: price trades into the B1 resistance zone (198.90) and a daily bar closes back below
+    it
+  • at random: T1 173.35 comes before the stop 213.20 27% of the time, for 0R on average before
+    costs
+  • this stock: the same plan entered on any day in its history got T1 first 14% of the time and
+    averaged -0.65R (201 entries)
+  • no edge is assumed: the reason to take the trade has to be your own
+  • earnings 2026-11-17 falls inside the expected holding period: gap risk
+  +2 more plans in --verbose
 
-Closest plan  trend entry now · 1R = 25.90 risk/share · R:R 1.5 to T1, 2.5 to T2 · time stop 60d
-     298.71   +27.7%     T2    2.5R projection
-     272.81   +16.6%     T1    1.5R projection
-     235.11    +0.5%  R        call wall + swing high + prior month high/low
-▸    233.95              B1    now
-     230.08    -1.7%  S        put wall + prior week high/low + swing high
-     221.11    -5.5%  S        3m volume POC + prior week high/low
-     217.70    -6.9%  S        swing high + 50d SMA
-     208.05   -11.1%     SL    0.5 ATR beyond fib 0.382 + 100d SMA +2 more
+Plan  rally short · 1R = 10.30 risk/share · R:R 2.9 to T1, 5.1 to T2 · time stop 60d
+     213.20   +17.4%    SL    0.5 ATR beyond the B2 zone
+     206.91   +13.9%  R B2    200d SMA + 20d EMA + fib 0.5 +2 more
+     198.90    +9.5%  R B1    fib 0.382 + call wall + swing high + swing low +1 more
+     186.44    +2.6%  R       zero gamma + 1y volume POC + swing high
+▸    181.68                    now
+     173.35    -4.6%  S T1    1y value area edge + swing low
+     150.22   -17.3%  S T2    fib ext 1.272 + put wall
 
---verbose for the backtests, evidence and every contract · --contracts to price the plan anyway
-Statistics from past prices, not investment advice. Past edges can stop working.
+Contracts  for rally short, if NVDA moves at random · delayed quotes · per contract, after spread and commission
+  ! option quotes are from the Mon 16:15 ET close: refresh with live quotes (`ox ingest quotes`) before ordering
+  ! prices are estimated for when the underlying reaches 202.91 with today's IVs; each day of waiting costs the theta shown
+  #  structure          exp    legs              price max loss  random   if T1  if not  needs   edge
+  1  put debit spread   Mar 19 +280P -160P       78.35     7835    -174   +1663    -840    34%   +7pt
+     short strike 160 sits at the plan's profit zone, selling 49% IV to cut cost
+  2  put debit spread   Mar 19 +280P -150P       80.29     8029    -192   +1803    -915    34%   +7pt
+     short strike 150 sits at the plan's profit zone, selling 50% IV to cut cost
+  3  long put           Mar 19 +280P             84.78     8478    -254   +2114   -1111    34%   +8pt
+     simplest expression
+  +3 more in --verbose
+  exit: close half when the underlying reaches T1 173.35 and the rest at T2 150.22; after T1, exit
+        the rest at entry 202.91; close everything on a daily close above 213.20 or on 2027-02-05
+  random: expected result if the stock moves at random · needs: how often T1 must come before the
+  stop to break even · edge: that minus the 27% it happens at random (shares need +0pt)
+
+--verbose for every plan, its history and every contract
+Odds if the stock moves at random, from past volatility. Not a recommendation: ox assumes no edge.
 ```
 
 Free data, no account, no broker login. Readable in a terminal and built to be driven by an AI
@@ -49,7 +73,7 @@ with a Rust toolchain: `cargo install --git https://github.com/c-j-p-nordquist/o
 ## Quick start
 
 ```bash
-ox pick NVDA            # verdict, why, and the plan against the levels
+ox pick NVDA            # a default plan, its odds at random, and the contracts
 ox pick NVDA -v         # the full report: every setup's backtest, every contract, level sources
 ox pick NVDA --json     # everything, for scripts and agents
 ox daemon start         # optional: keeps data warm so every call answers in milliseconds
@@ -69,68 +93,40 @@ Then ask Claude things like "pick NVDA" or "review my book". ox does the statist
 what ox can't see (news, catalysts, macro) and keeps it separate from the numbers. For claude.ai,
 `ox skill show ox > SKILL.md` gives the file to upload.
 
-## How `ox pick` decides
+## How `ox pick` works
 
 1. **Regime.** Trend score in [-1, 1] from seven time-series momentum / moving-average conditions;
    realized vol (Yang-Zhang), an EWMA forecast mean-reverting to the one-year level, and implied
    vs forecast realized vol (cheap / fair / rich).
-2. **Zones with measured weights.** Swing pivots, Fibonacci retracements (0.382–0.786) and
-   extensions (1.272, 1.618), 20/50/100/200-day averages, volume-profile POC and value area,
-   VWAPs anchored at the last major swing, prior week/month extremes, plus GEX walls and zero
-   gamma. Each kind of level is scored on the stock's own five-year history: when price touched
-   it, did it bounce one ATR before closing half an ATR through? The same test on control levels
-   at random offsets gives the base rate, so a source's *lift* is how much better than random it
-   has been. The pass is walk-forward (no look-ahead). `--verbose` prints the table.
-3. **Plans.** With the trend: a pullback into the nearest qualifying zone, a deeper pullback into
-   the strongest one, a breakout through the zone ahead, and a trend entry now; without a trend,
-   range fades both ways. Each has B1/B2 (scale-in), SL beyond the level that would prove it wrong,
-   and T1/T2 at the next zones (or R-multiple projections when no measured zone lies ahead).
-4. **Backtest of the exact plan.** Half off at T1, stop to breakeven, rest at T2, time stop —
-   replayed at every past signal with the zones known on that day. Compared with three controls:
-   a driftless coin flip, entering any day in the same trend, and entering on any day at all
-   (the stock's drift). The result is split into drift + trend filter + level timing.
-5. **Verdict.** A setup has an edge with ≥ 8 signals, positive expectancy after shrinking toward
-   zero by the *effective* (non-overlapping) sample, a one-sided t ≥ 1.65, and beating the
-   any-day control. "Robust" additionally clears the Šidák-corrected bar for the number of setups
-   tested. ENTER if a setup with an edge has triggered and waiting hasn't historically paid more;
-   WAIT with the trigger if one has an edge but hasn't triggered; otherwise NO TRADE, with why.
-6. **Contracts.** Long calls/puts, debit spreads with the short strike at the plan's targets,
+2. **Levels.** Swing pivots, Fibonacci retracements and extensions, 20/50/100/200-day averages,
+   volume-profile POC and value area, VWAPs anchored at the last major swing, prior week/month
+   extremes, plus GEX walls and zero gamma. They are conventional places to put entries, stops and
+   targets. Measured against control levels they hold no more often than chance, so ox does not
+   claim price will turn at them.
+3. **Plans.** Your levels (`--entry --stop --t1 --t2`, `--bias long|short`) lead when given.
+   Otherwise: a pullback into the nearest level, a deeper pullback, a breakout through the level
+   ahead and an entry now; without a trend, range fades both ways. Each has B1/B2 (scale-in), SL,
+   and T1/T2. The plan is AT ENTRY or WAITING for its trigger; that is its state, not advice.
+4. **Odds at random.** With no drift, T1 comes before the stop (entry − SL) / (T1 − SL) of the
+   time and the plan averages 0R before costs. The plan's history on this stock (past signals, and
+   the same plan entered on any day) is shown as description, not as evidence of an edge.
+5. **Contracts.** Long calls/puts, debit spreads with the short strike at the plan's targets,
    butterflies centered on T1/T2, and credit spreads with the short strike beyond the stop. Each is
-   run through a Monte Carlo of the plan itself: forecast realized vol, a drift calibrated so the
-   chance of T1 before the stop matches the backtest, the same scale-out rules, Black-Scholes marks
-   with sticky-strike IV (lower after earnings), half the spread and commission each way. Ranked by
-   expected P&L on max loss, shown next to the expected P&L if the setup has no edge.
+   run through a Monte Carlo of the plan on zero-drift paths: forecast realized vol, half off at
+   T1, stop to breakeven, rest at T2, time stop, Black-Scholes marks with sticky-strike IV (lower
+   after earnings), half the spread and commission each way. Per structure: the expected result at
+   random, the result when T1 comes first and when it does not, and from those how often T1 must
+   come first to break even. That minus the random rate is the edge you have to bring; the ranking
+   puts the structure that needs the least first. Shares need zero.
 
-Your own levels can be given (`--entry --stop --t1 --t2`, `--bias long|short`); they are
-backtested the same way. Live broker quotes can be pushed in (`ox ingest quotes -`) and replace
-the delayed ones for 30 minutes. With a portfolio loaded, picks are sized against the book.
-
-What ox does not judge: news, catalysts and macro. Those are for you (or your agent) to add on top.
-
-## Other commands
-
-Every command accepts `--json`.
-
-```bash
-ox levels NVDA          # support/resistance by confluence + prior day, pre-market, overnight, gap
-ox overview SPY         # IV30, expected move per expiry, GEX levels, P/C, max pain
-ox gex SPY --dte 7      # GEX by strike, zero gamma, walls
-ox gex SPY --map        # GEX heatmap by strike and expiration, with a read of it
-ox serve                # the heatmap in a browser, with the pick plan drawn on it
-ox chain NVDA --dte 14  # chain for the first expiry ≥ 14 days out
-ox quote SPY QQQ IWM
-ox earnings NVDA GOOG   # next earnings dates (estimated until the company confirms)
-ox brief                # pre-market brief: backdrop, and per symbol move, levels, expected move
-ox watchlist import -   # replace the watchlist (JSON or plain tickers, from stdin)
-```
-
-With a portfolio loaded:
+Live broker quotes can be pushed in (`ox ingest quotes -`) and replace the delayed ones for 30
+minutes. With a portfolio loaded, picks are sized against the book.
 
 ```bash
 ox portfolio import pos.json   # load positions (schema below; `-` for stdin)
 ox portfolio                   # marked to market
 ox risk                        # Greeks, 1σ daily P&L (market vs company-specific), flags
-ox review                      # HOLD / CLOSE / ROLL per holding, candidates, replacements
+ox review                      # HOLD or CLOSE per holding: what holding costs at random
 ```
 
 ## Portfolio
@@ -218,7 +214,7 @@ be added without touching the analytics. Contributions welcome.
 
 ## Disclaimer
 
-ox is a statistics tool, not investment advice. Backtests describe the past; edges stop working,
+ox is an arithmetic tool, not investment advice. It assumes no edge; its volatility forecast can be wrong,
 data can be wrong or stale, and options can lose their entire value. You are responsible for your
 own trades. The software is provided as is, without warranty (see [LICENSE](LICENSE)).
 

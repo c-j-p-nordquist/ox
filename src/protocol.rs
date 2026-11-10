@@ -64,10 +64,8 @@ pub enum Request {
         symbol: String,
         params: PickParams,
     },
-    /// Holdings judged as fresh trades, candidates from `scan` (default: watchlist), replacements.
-    Review {
-        scan: Vec<String>,
-    },
+    /// Holdings simulated on random paths against closing them now.
+    Review,
     Shutdown,
 }
 

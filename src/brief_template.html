@@ -152,18 +152,15 @@ footer { font-size: 12px; color: var(--muted); display: grid; gap: 4px; }
 
   const rv = b.review;
   if (rv) {
-    const act = { hold: "HOLD", close: "CLOSE", roll: "ROLL" };
+    const act = { hold: "HOLD", close: "CLOSE" };
     const money = (x) => (x < 0 ? "−$" : "+$") + Math.abs(x).toFixed(0);
     const holds = rv.holdings.map((h) => {
-      const ev = h.hold ? (h.has_edge ? h.hold.ev_plan : h.hold.ev_no_edge) : null;
-      return `<div class="flag ${h.action === "close" ? "high" : h.action === "roll" ? "warn" : "ok"}"><span class="sev">${act[h.action]}</span>
-        <span><b>${esc(h.underlying)}</b> ${esc(h.positions.map((p) => p.replace(h.underlying + " ", "")).join(", "))}${ev != null ? ` · hold EV <span class="num">${money(ev)}</span>` : ""}<br><span class="src">${esc(h.reasons[0] || "")}</span></span></div>`;
+      const ev = h.hold ? h.hold.ev_no_edge : null;
+      return `<div class="flag ${h.action === "close" ? "high" : "ok"}"><span class="sev">${act[h.action]}</span>
+        <span><b>${esc(h.underlying)}</b> ${esc(h.positions.map((p) => p.replace(h.underlying + " ", "")).join(", "))}${ev != null ? ` · holding at random <span class="num">${money(ev)}</span>` : ""}<br><span class="src">${esc(h.reasons[0] || "")}</span></span></div>`;
     }).join("");
-    const reps = (rv.replacements || []).map((x) => `<div class="flag warn"><span class="sev">SWAP</span><span>Close <b>${esc(x.close)}</b> → open <b>${esc(x.open)}</b> ${esc(x.open_pick.structure.replace(/_/g, " "))} ×${x.lots} · gain <span class="num">${money(x.gain)}</span> (${money(x.gain_no_edge)} if no edge)</span></div>`).join("");
-    const cands = rv.candidates.map((c) => `<span class="chip">${esc(c.symbol)} ${c.verdict === "enter" ? "ENTER" : "WAIT"}${c.robust ? " · robust" : ""}</span>`).join("");
     const changes = (b.changes || []).map((c) => `<li>${esc(c)}</li>`).join("");
-    out.push(`<section><h2>Book review</h2><div class="flags">${holds}${reps}</div>
-      ${cands ? `<div class="chips" style="margin-top:10px">${cands}</div>` : ""}
+    out.push(`<section><h2>Book review</h2><div class="flags">${holds}</div>
       ${changes ? `<div class="read"><ul>${changes}</ul></div>` : ""}</section>`);
   }
   if ((b.events || []).length) {

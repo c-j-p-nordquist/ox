@@ -41,11 +41,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Build a trade plan for a symbol and pick the contracts that fit it.
+    /// Price a trade plan for a symbol as if the stock moves at random.
     ///
-    /// Reads the trend, finds support/resistance zones weighted by how well each kind of level
-    /// has held on this stock, builds pullback/breakout plans (B1, B2, SL, T1, T2), backtests
-    /// each plan, and says ENTER, WAIT (with the trigger to wait for) or NO TRADE, with reasons.
+    /// Takes your levels (--entry, --stop, --t1, --t2) or builds a pullback/breakout plan from
+    /// the nearest support/resistance, then shows how often T1 comes before the stop by chance
+    /// and, per option structure, how much better than chance the plan must be to break even.
+    /// It does not say whether to trade: no plan is assumed to have an edge.
     Pick {
         symbol: String,
         /// Force a direction instead of following the trend.
@@ -75,9 +76,6 @@ enum Cmd {
         /// Maximum bid/ask spread per leg as a fraction of mid.
         #[arg(long, default_value_t = 0.12)]
         max_spread: f64,
-        /// Price contracts for the leading setup even when no setup has an edge.
-        #[arg(long)]
-        contracts: bool,
         /// Print the full report: thesis, every setup's backtest, all contracts, zone sources
         /// and the per-source calibration table.
         #[arg(long, short)]
@@ -85,13 +83,11 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Review the book: HOLD / CLOSE / ROLL per holding, plus candidates and replacements.
+    /// Review the book: HOLD or CLOSE per holding.
     ///
-    /// Each holding is judged as a fresh trade; candidates are watchlist names with a measured
-    /// edge; replacements pair a candidate the book can't fund with the holding worth closing.
+    /// Each holding is simulated on random paths against closing it now: CLOSE when holding is
+    /// expected to lose a material part of its value unless the stock moves the right way.
     Review {
-        /// Symbols to scan for candidates (default: the watchlist).
-        symbols: Vec<String>,
         #[arg(long)]
         json: bool,
     },
@@ -312,28 +308,13 @@ async fn run() -> Result<()> {
         Cmd::Portfolio { action: Some(PortfolioCmd::Import { file }), .. } => cli::portfolio_import(&file),
         Cmd::Portfolio { action: None, json } => cli::portfolio_show(&connect().await?, json).await,
         Cmd::Risk { json } => cli::risk(&connect().await?, json).await,
-        Cmd::Pick {
-            symbol,
-            bias,
-            entry,
-            stop,
-            t1,
-            t2,
-            max_risk,
-            limit,
-            min_oi,
-            max_spread,
-            contracts,
-            verbose,
-            json,
-        } => {
+        Cmd::Pick { symbol, bias, entry, stop, t1, t2, max_risk, limit, min_oi, max_spread, verbose, json } => {
             let params = analytics::pick::PickParams {
                 bias,
                 entry,
                 stop,
                 t1,
                 t2,
-                force_contracts: contracts,
                 contracts: analytics::pick::contracts::ContractParams {
                     limit,
                     min_oi,
@@ -344,7 +325,7 @@ async fn run() -> Result<()> {
             };
             cli::pick(&connect().await?, symbol, params, verbose, json).await
         }
-        Cmd::Review { symbols, json } => cli::review(&connect().await?, symbols, json).await,
+        Cmd::Review { json } => cli::review(&connect().await?, json).await,
         Cmd::Daemon { action } => match action {
             DaemonCmd::Run => daemon::run(cfg).await,
             DaemonCmd::Start => {

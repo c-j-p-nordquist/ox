@@ -415,28 +415,7 @@ impl Engine {
 
     pub async fn pick(self: &Arc<Self>, symbol: &str, params: pick::PickParams) -> Result<pick::PickReport> {
         let sym = symbol.to_ascii_uppercase();
-        let mut report = self.pick_sized(&sym, params).await?;
-        // ENTER but the book cannot fund it: say which holding to swap out, if any is worth it.
-        let blocked = report.contracts.as_ref().is_some_and(|c| {
-            !c.picks.is_empty() && c.picks.iter().all(|p| p.sizing.as_ref().is_some_and(|s| s.contracts == 0))
-        });
-        if report.verdict == pick::Verdict::Enter && blocked {
-            if let (Some(b), Some(c)) = (report.budget.clone(), report.contracts.as_ref()) {
-                let holdings = self.holdings(&b).await.unwrap_or_default();
-                let best = c.picks.first().cloned();
-                let cand = review::Candidate {
-                    symbol: sym.clone(),
-                    verdict: report.verdict,
-                    headline: report.headline.clone(),
-                    setup: report.setups.first().map(|s| s.name.clone()),
-                    robust: report.setups.first().is_some_and(|s| s.robust),
-                    earnings_move: report.earnings_move.clone(),
-                    pick: best,
-                };
-                report.replace = review::replacements(&holdings, &[cand], &b);
-            }
-        }
-        Ok(report)
+        self.pick_sized(&sym, params).await
     }
 
     /// `pick`, with its contracts sized against the book.
@@ -507,9 +486,9 @@ impl Engine {
         Ok(report)
     }
 
-    /// Each holding judged as a fresh trade: `pick` in its direction, and its contracts simulated
-    /// through that plan against closing now.
-    async fn holdings(self: &Arc<Self>, b: &sizing::Budget) -> Result<Vec<review::Holding>> {
+    /// Each holding simulated through the leading plan for its direction, on random paths,
+    /// against closing now.
+    async fn holdings(self: &Arc<Self>) -> Result<Vec<review::Holding>> {
         let Some(file) = portfolio::load()? else { return Ok(Vec::new()) };
         let mut groups: Vec<(String, Vec<portfolio::Position>)> = Vec::new();
         for p in file.positions.iter().filter(|p| p.qty != 0.0) {
@@ -521,8 +500,8 @@ impl Engine {
         }
         let mut set = JoinSet::new();
         for (i, (sym, positions)) in groups.into_iter().enumerate() {
-            let (me, b) = (self.clone(), b.clone());
-            set.spawn(async move { (i, me.holding(&sym, positions, &b).await) });
+            let me = self.clone();
+            set.spawn(async move { (i, me.holding(&sym, positions).await) });
         }
         let mut out = Vec::new();
         while let Some(r) = set.join_next().await {
@@ -534,12 +513,7 @@ impl Engine {
         Ok(out.into_iter().map(|(_, h)| h).collect())
     }
 
-    async fn holding(
-        self: &Arc<Self>,
-        sym: &str,
-        positions: Vec<portfolio::Position>,
-        b: &sizing::Budget,
-    ) -> Result<review::Holding> {
+    async fn holding(self: &Arc<Self>, sym: &str, positions: Vec<portfolio::Position>) -> Result<review::Holding> {
         let chain = self.chain(sym).await.ok();
         let now = Utc::now();
         let find = |p: &portfolio::Position| {
@@ -569,7 +543,6 @@ impl Engine {
             stop: None,
             t1: None,
             t2: None,
-            force_contracts: true,
             contracts: self.contract_params(),
         };
         let report = self.pick_sized(sym, params).await?;
@@ -641,105 +614,31 @@ impl Engine {
             market_value: mv,
             unrealized,
             min_dte: positions.iter().filter_map(|p| p.expiry).map(|e| bs::dte(e, now)).min(),
-            verdict: report.verdict,
             headline: report.headline.clone(),
             setup: setup.as_ref().map(|s| s.name.clone()),
-            has_edge: setup.as_ref().is_some_and(|s| s.has_edge),
             earnings_move: report.earnings_move.clone(),
             hold,
             action: review::Action::Hold,
             reasons: Vec::new(),
-            roll_to: None,
         };
-        let fresh = report.contracts.as_ref().and_then(|c| c.picks.first());
-        let (action, reasons) = review::decide(&h, fresh, setup.as_ref().map_or(0.0, |s| s.days_to_t1));
-        if action == review::Action::Roll {
-            h.roll_to = fresh.cloned().map(|mut p| {
-                p.sizing =
-                    Some(sizing::size_lots(p.max_loss, p.net_at_entry > 0.0, sym, &review::after_closing(b, &h), 0.0));
-                p
-            });
-        }
+        let (action, reasons) = review::decide(&h);
         h.action = action;
         h.reasons = reasons;
         Ok(h)
     }
 
-    /// Holdings (HOLD / CLOSE / ROLL), candidates with an edge among `scan` (default: the
-    /// watchlist), and replacements where a blocked candidate beats a holding.
-    pub async fn review(self: &Arc<Self>, scan: Vec<String>) -> Result<review::ReviewReport> {
+    /// Holdings, each HOLD or CLOSE on what holding costs at random.
+    pub async fn review(self: &Arc<Self>) -> Result<review::ReviewReport> {
         let risk = self.risk().await?.context("no portfolio: import one with `ox portfolio import`")?;
         let b = risk.budget.clone().context("portfolio has no net liquidation: cannot size")?;
-        let holdings = self.holdings(&b).await?;
-        let held: std::collections::HashSet<String> = holdings.iter().map(|h| h.underlying.clone()).collect();
-        let scan: Vec<String> = if scan.is_empty() { crate::watchlist::effective(&self.cfg.watchlist).0 } else { scan };
-        let mut seen = std::collections::HashSet::new();
-        let scan: Vec<String> = scan
-            .into_iter()
-            .map(|s| s.to_ascii_uppercase())
-            .filter(|s| !held.contains(s) && seen.insert(s.clone()))
-            .collect();
-        let mut set = JoinSet::new();
-        for sym in scan {
-            let me = self.clone();
-            set.spawn(async move {
-                let r = me
-                    .pick_sized(
-                        &sym,
-                        pick::PickParams {
-                            bias: None,
-                            entry: None,
-                            stop: None,
-                            t1: None,
-                            t2: None,
-                            force_contracts: false,
-                            contracts: me.contract_params(),
-                        },
-                    )
-                    .await;
-                (sym, r)
-            });
-        }
-        let (mut candidates, mut no_trade) = (Vec::new(), Vec::new());
-        while let Some(r) = set.join_next().await {
-            let (sym, r) = r?;
-            match r {
-                Ok(rep) if rep.verdict != pick::Verdict::NoTrade => candidates.push(review::Candidate {
-                    symbol: sym,
-                    verdict: rep.verdict,
-                    headline: rep.headline.clone(),
-                    setup: rep.setups.first().map(|s| s.name.clone()),
-                    robust: rep.setups.first().is_some_and(|s| s.robust),
-                    earnings_move: rep.earnings_move.clone(),
-                    pick: rep.contracts.and_then(|c| c.picks.into_iter().next()),
-                }),
-                Ok(_) => no_trade.push(sym),
-                Err(e) => no_trade.push(format!("{sym} (failed: {e:#})")),
-            }
-        }
-        candidates.sort_by(|a, b| {
-            (b.verdict == pick::Verdict::Enter)
-                .cmp(&(a.verdict == pick::Verdict::Enter))
-                .then(b.robust.cmp(&a.robust))
-                .then(a.symbol.cmp(&b.symbol))
-        });
-        no_trade.sort();
-        let replacements = review::replacements(&holdings, &candidates, &b);
+        let holdings = self.holdings().await?;
         let mut notes = vec![
-            "hold EV is what holding adds from here vs closing at mid now (sunk cost ignored); it uses the plan's drift only when the direction has a measured edge, zero drift otherwise".to_string(),
+            "hold EV is what holding adds from here vs closing at mid now (sunk cost ignored) if the stock moves at random; no direction is assumed to have an edge".to_string(),
         ];
         if risk.freshness.as_ref().is_some_and(|f| f.quotes_stale) {
             notes.push("option quotes are from the last close: re-check with live quotes before acting".into());
         }
-        Ok(review::ReviewReport {
-            as_of: Utc::now().timestamp(),
-            budget: Some(b),
-            holdings,
-            candidates,
-            replacements,
-            no_trade,
-            notes,
-        })
+        Ok(review::ReviewReport { as_of: Utc::now().timestamp(), budget: Some(b), holdings, notes })
     }
 
     pub async fn handle(self: &Arc<Self>, req: Request) -> Response {
@@ -817,7 +716,7 @@ impl Engine {
             Request::Portfolio => Response::Portfolio(self.portfolio().await?),
             Request::Risk => Response::Risk(self.risk().await?),
             Request::Pick { symbol, params } => Response::Pick(Box::new(self.pick(&symbol, params).await?)),
-            Request::Review { scan } => Response::Review(Box::new(self.review(scan).await?)),
+            Request::Review => Response::Review(Box::new(self.review().await?)),
             Request::Shutdown => Response::Ok,
         })
     }

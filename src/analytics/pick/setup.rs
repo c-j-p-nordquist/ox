@@ -4,11 +4,16 @@
 //! two targets (T1, T2). Management is fixed so it can be tested: half off at T1 with the stop
 //! moved to breakeven, the rest at T2, everything closed at the time stop.
 //!
-//! The backtest replays that plan on the stock's own history at every past day the setup's
-//! conditions held, using the zones and weights known on that day. Two references keep it
-//! honest: the driftless probability of reaching T1 before SL (which is (entry − SL) /
-//! (T1 − SL) in ATR units, the "no edge" number), and a trend-only control that enters on every
-//! day with the same trend, which shows how much of the result is just the stock's drift.
+//! The history replays that plan on the stock's own past at every day the setup's conditions
+//! held, using the zones known on that day, next to two references: the driftless probability of
+//! reaching T1 before SL (which is (entry − SL) / (T1 − SL) in ATR units, the "no edge" number),
+//! and the same plan entered on any day, which is the stock's own drift over the sample.
+//!
+//! The history is description, not evidence of an edge. One stock gives about 20 independent
+//! trades with results spread ±1.3R, which cannot tell a real edge from luck, and pooled over 59
+//! liquid tickers (November 2026) these setups averaged 0R and the level sources held no more
+//! often than control levels. So no setup is ever marked as having an edge: a plan is a shape
+//! with known odds if the stock moves at random, and the reason to take it is the user's own.
 
 use chrono::{NaiveDate, TimeZone, Utc};
 use chrono_tz::America::New_York;
@@ -26,8 +31,6 @@ pub const QUALIFY_TESTED: f64 = 0.2;
 fn qualifies(z: &Zone) -> bool {
     z.strength >= QUALIFY && z.tested_strength >= QUALIFY_TESTED
 }
-/// Pseudo-observations pulling backtest results toward "no edge".
-const SHRINK_N: f64 = 10.0;
 /// Bars skipped after a historical signal so overlapping trades are not double counted.
 const COOLDOWN: usize = 5;
 
@@ -101,7 +104,7 @@ pub struct Outcomes {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Backtest {
-    /// Historical signals of this setup with this plan shape.
+    /// Past signals of this setup with this plan shape: description, not a measured edge.
     pub signals: Outcomes,
     pub first_signal: Option<NaiveDate>,
     pub last_signal: Option<NaiveDate>,
@@ -113,21 +116,6 @@ pub struct Backtest {
     pub any_day: Outcomes,
     /// Non-overlapping trades the signals amount to: min(signals, span / holding period).
     pub effective_n: f64,
-    /// One-sided t-statistic of the mean result on the effective sample (1.65 ≈ 95%).
-    pub t_stat: f64,
-    /// The control the edge is measured against: `any_day` for a plain trend entry (the trend
-    /// filter is the claim), else the better of `trend_only` and `any_day` (the level must add
-    /// timing beyond the trend and the drift).
-    pub control: String,
-    /// Signal expectancy minus the control's, R.
-    pub excess_r: f64,
-    /// t-statistic of `excess_r` on the effective sample, the control's mean taken as the
-    /// benchmark. Without it a strong trending stock's drift alone makes any long setup look
-    /// significant.
-    pub t_excess: f64,
-    /// Signal results shrunk toward no edge by effective sample size; what ranking uses.
-    pub p_t1_shrunk: f64,
-    pub expectancy_r_shrunk: f64,
     /// Time stop used, trading days.
     pub hold_days: usize,
     /// Signals split by whether an earnings reaction fell inside the trade (reaction days
@@ -162,6 +150,9 @@ pub struct Setup {
     pub risk_per_share: f64,
     pub rr_t1: f64,
     pub rr_t2: f64,
+    /// How often T1 comes before the stop if the stock moves at random, from where the plan is
+    /// entered: spot when it is at its entry, else the average entry.
+    pub p_t1_random: f64,
     /// Zones between entry and T1 that price must get through.
     pub obstacles: Vec<PlanLevel>,
     pub backtest: Backtest,
@@ -171,14 +162,6 @@ pub struct Setup {
     pub why: Vec<String>,
     pub why_not_now: Vec<String>,
     pub alerts: Vec<Alert>,
-    /// Shrunk expectancy in R; the ranking key.
-    pub score: f64,
-    /// Whether the backtest supports the plan (enough signals and a positive shrunk expectancy).
-    pub has_edge: bool,
-    /// Where the edge comes from: drift, the trend filter, or the level's timing.
-    pub edge_source: String,
-    /// The edge also clears the threshold corrected for the number of setups tested (Šidák).
-    pub robust: bool,
 }
 
 fn date(t: i64) -> Option<NaiveDate> {
@@ -378,23 +361,9 @@ pub fn backtest(s: &Series, cal: &Calibration, kind: SetupKind, d: f64, sh: Shap
     let no_edge = sh.stop / (sh.stop + sh.t1);
     let span = first_i.map_or(0, |f| last_i - f + hold) as f64;
     let n = (signals.trades as f64).min(span / hold as f64);
-    let t_stat = if signals.sd_r > 0.0 { signals.expectancy_r / signals.sd_r * n.sqrt() } else { 0.0 };
     let (trend_only, any_day) = (summarize(&ctl), summarize(&any));
-    let use_trend =
-        kind != SetupKind::TrendNow && trend_only.trades >= 8 && trend_only.expectancy_r > any_day.expectancy_r;
-    let (control, c) = if use_trend { ("trend_only", &trend_only) } else { ("any_day", &any_day) };
-    // The control's days contain the signal days (same stock, same period), so the two means are
-    // not independent samples: test the signal against the control's mean as a fixed benchmark.
-    let excess_r = signals.expectancy_r - c.expectancy_r;
-    let t_excess = if signals.sd_r > 0.0 { excess_r / signals.sd_r * n.sqrt() } else { 0.0 };
     Backtest {
         effective_n: n,
-        t_stat,
-        control: control.into(),
-        excess_r,
-        t_excess,
-        p_t1_shrunk: (signals.p_t1 * n + no_edge * SHRINK_N) / (n + SHRINK_N),
-        expectancy_r_shrunk: signals.expectancy_r * n / (n + SHRINK_N),
         signals,
         first_signal: first,
         last_signal: last,
@@ -442,11 +411,9 @@ fn targets(
     let t1z = ahead.iter().position(|z| d * (z.price - entry) >= risk.max(atr));
     let t1 = match t1z {
         Some(k) => level(ahead[k]),
-        None => PlanLevel {
-            price: entry + d * 1.5 * risk,
-            basis: "1.5R projection: no zone ahead with a measured hold rate".into(),
-            zone: None,
-        },
+        None => {
+            PlanLevel { price: entry + d * 1.5 * risk, basis: "1.5R projection: no level ahead".into(), zone: None }
+        }
     };
     let obstacles: Vec<PlanLevel> =
         ahead.iter().filter(|z| d * (z.price - t1.price) < -1e-9).map(|z| level(z)).collect();
@@ -458,11 +425,7 @@ fn targets(
         .unwrap_or_else(|| {
             let p = entry + d * 2.5 * risk;
             let p = if d * (p - t1.price) < atr { t1.price + d * atr } else { p };
-            PlanLevel {
-                price: p,
-                basis: "2.5R projection: no zone beyond T1 with a measured hold rate".into(),
-                zone: None,
-            }
+            PlanLevel { price: p, basis: "2.5R projection: no level beyond T1".into(), zone: None }
         });
     (t1, t2, obstacles)
 }
@@ -490,15 +453,11 @@ fn finish(
     let days_to_t1 = bt.signals.median_days_t1.filter(|_| bt.signals.trades >= 8).unwrap_or(vol_days(shape.t1));
     let days_to_t2 =
         bt.signals.median_days_t2.filter(|_| bt.signals.trades >= 8).unwrap_or(vol_days(shape.t2)).max(days_to_t1);
-    let has_edge = edge(&bt);
     let mut alerts = vec![Alert { price: b1.price, note: format!("{name}: B1") }];
     if let Some(b) = &b2 {
         alerts.push(Alert { price: b.price, note: format!("{name}: B2") });
     }
-    let edge_source = edge_source(&bt, has_edge);
     Setup {
-        robust: false,
-        edge_source,
         kind,
         direction: dir,
         status: Status::Wait,
@@ -508,73 +467,20 @@ fn finish(
         risk_per_share: risk,
         rr_t1: d * (t1.price - avg) / risk,
         rr_t2: d * (t2.price - avg) / risk,
+        p_t1_random: bt.no_edge_p_t1,
         b1,
         b2,
         sl,
         t1,
         t2,
         obstacles,
-        score: bt.expectancy_r_shrunk,
         backtest: bt,
         days_to_t1,
         days_to_t2,
         why: Vec::new(),
         why_not_now: Vec::new(),
         alerts,
-        has_edge,
     }
-}
-
-/// Minimum one-sided t-statistic for an edge (≈ 95% confidence).
-pub const MIN_T: f64 = 1.65;
-
-/// One-sided t threshold keeping 95% family-wise confidence over `k` tests (Šidák, normal approx).
-pub fn family_t(k: usize) -> f64 {
-    let alpha = 1.0 - 0.95f64.powf(1.0 / k.max(1) as f64);
-    // Invert the normal tail by bisection.
-    let (mut lo, mut hi) = (0.0, 6.0);
-    for _ in 0..60 {
-        let mid = 0.5 * (lo + hi);
-        if 1.0 - crate::analytics::bs::norm_cdf(mid) > alpha {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    0.5 * (lo + hi)
-}
-
-/// A measured edge: enough signals, positive after shrinking, unlikely to be luck, and
-/// significantly better than its control (so it is more than the drift, or the trend, over the
-/// sample).
-pub fn edge(bt: &Backtest) -> bool {
-    bt.signals.trades >= 8
-        && bt.expectancy_r_shrunk > 0.05
-        && bt.t_stat >= MIN_T
-        && bt.excess_r >= 0.05
-        && bt.t_excess >= MIN_T
-}
-
-/// Split the plan's result into drift (any day), the trend filter, and the level's timing.
-pub fn edge_source(bt: &Backtest, has_edge: bool) -> String {
-    let (sig, trend, any) = (bt.signals.expectancy_r, bt.trend_only.expectancy_r, bt.any_day.expectancy_r);
-    let split = format!(
-        "{sig:+.2}R = drift {any:+.2}R + trend filter {:+.2}R + level timing {:+.2}R",
-        trend - any,
-        sig - trend
-    );
-    if !has_edge {
-        return format!("none measured ({split})");
-    }
-    let (t, l) = (trend - any, sig - trend);
-    let main = if any >= t.max(l) {
-        "mostly the stock's drift over the sample, the least reliable kind"
-    } else if t >= l {
-        "mostly the trend filter"
-    } else {
-        "mostly the level's timing"
-    };
-    format!("{main} ({split})")
 }
 
 /// Qualifying zones behind price (support for a long), nearest first.
@@ -680,7 +586,7 @@ pub fn trend_now(ctx: &Ctx, dir: Direction) -> Option<Setup> {
                 if d > 0.0 { (far - 0.5 * a).min(z.price - 0.75 * a) } else { (far + 0.5 * a).max(z.price + 0.75 * a) };
             PlanLevel { price: p, basis: format!("beyond {} by 0.5 ATR", z.describe()), zone: None }
         }
-        None => PlanLevel { price: spot - d * 2.0 * a, basis: "2 ATR: no proven zone behind price".into(), zone: None },
+        None => PlanLevel { price: spot - d * 2.0 * a, basis: "2 ATR: no level behind price".into(), zone: None },
     };
     let overhead = qualifying(ctx.zones).find(|z| (0.0..=0.5 * a).contains(&(d * (z.price - spot))));
     let kind = if overhead.is_some() { SetupKind::TrendUnderZone } else { SetupKind::TrendNow };
@@ -769,9 +675,7 @@ pub fn manual(
         s.rr_t2 = d * (s.t2.price - entry) / risk;
         let shape = Shape { stop: risk / a, t1: s.rr_t1 * risk / a, t2: s.rr_t2 * risk / a };
         s.backtest = backtest(ctx.series, ctx.cal, SetupKind::Manual, d, shape, ctx.events);
-        s.score = s.backtest.expectancy_r_shrunk;
-        s.has_edge = edge(&s.backtest);
-        s.edge_source = edge_source(&s.backtest, s.has_edge);
+        s.p_t1_random = s.backtest.no_edge_p_t1;
     }
     if (ctx.spot - entry).abs() <= 0.25 * a {
         s.status = Status::Enter;
@@ -828,12 +732,6 @@ mod tests {
         let b = bars(&[100.0, 99.4, 98.0]);
         let t = replay(&b, 0, 100.0, 1.0, 1.0, sh, 20).unwrap();
         assert!(t.stopped && (t.r + 1.0).abs() < 1e-9, "{t:?}");
-    }
-
-    #[test]
-    fn family_threshold_grows_with_tests() {
-        assert!((family_t(1) - 1.645).abs() < 0.01);
-        assert!((family_t(4) - 2.23).abs() < 0.02, "{}", family_t(4));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 ---
 name: ox
-description: Use the `ox` options CLI — above all `ox pick SYM`, which builds a backtested trade plan (B1/B2/SL/T1/T2, ENTER / WAIT with triggers / NO TRADE) and ranks the option contracts that fit it. Use whenever the user types a ticker to "pick", asks for a plan or the best options for a ticker, asks about a ticker's options, gamma/GEX, expected move or levels, wants their book reviewed, or wants positions loaded into ox.
+description: Use the `ox` options CLI — above all `ox pick SYM`, which prices a trade plan (B1/B2/SL/T1/T2, the user's levels or default ones) as if the stock moves at random and ranks option contracts by how much better than chance the plan must be for each to break even. It never says whether to trade. Use whenever the user types a ticker to "pick", asks what a plan costs or which options fit it, asks about a ticker's options, gamma/GEX, expected move or levels, wants their book reviewed, or wants positions loaded into ox.
 ---
 
 # Using `ox` as an analyst
@@ -15,55 +15,56 @@ If `ox` is not on PATH, tell the user how to install it (see the README) rather 
 
 ## `ox pick SYM` — the main job
 
-ox does the statistics; you add judgment, live prices if the user has a broker connection, and
-the write-up.
+ox does the arithmetic of a plan; the reason to trade is the user's. **ox assumes no edge.** An
+audit in November 2026 pooled 59 liquid tickers: ox's level sources held no more often than random
+levels, and its setups averaged 0R. One stock's history (about 20 independent trades) cannot show
+an edge either way. So ox no longer says ENTER or NO TRADE. It says what a plan is worth if the
+stock moves at random, which is the bar the user's own idea has to clear.
 
 ### What ox computes (and how to read it)
 
-- `verdict`: `enter` (a setup with a measured edge has triggered), `wait` (one has an edge but its
-  trigger has not fired — `headline` says exactly what to wait for), `no_trade` (no setup has a
-  measured edge; `why_not_now` says why). NO TRADE is a normal, frequent answer. Do not argue the
-  user into a trade the numbers don't support.
-- `setups[]`, leading one first: `name`, `status`, `trigger` (checkable: "a daily bar closes back
-  above 230.08"), `b1`/`b2` (scale-in entries), `sl`, `t1`/`t2`, each with `basis` (the zone's
-  sources or the rule) — quote these when explaining. `alerts[]` are the prices to watch.
-  `status` says only whether the trigger fired; `has_edge` says whether it is worth trading.
-- Zones: support/resistance from swing pivots, fib retracements/extensions, MAs, volume profile,
-  anchored VWAPs, prior week/month, plus GEX walls/zero gamma. Each source has a `lift`: how often
-  that kind of level held on **this stock** vs a random level (1.0 = no better than random; options
-  levels get a fixed 1.1 and are marked "not backtested"). `ox pick SYM --verbose` prints the table.
-- `backtest` per setup: the exact plan (half at T1, stop to breakeven, rest at T2, time stop)
-  replayed at every past signal. Three controls: `no_edge_p_t1` (coin flip with these distances),
-  `trend_only` (enter any day in the same trend) and `any_day` (enter any day at all = the stock's
-  drift). `edge_source` splits the result into drift + trend filter + level timing.
-- `has_edge` needs ≥ 8 signals, shrunk expectancy > 0.05R, t ≥ 1.65 on the *effective*
-  (non-overlapping) sample, **and** `t_excess` ≥ 1.65: the result must beat its `control` by a
-  margin unlikely to be luck. The control is `any_day` for a plain trend entry and the better of
-  `trend_only`/`any_day` for level setups. `excess_r` is the margin. `robust` = both t's also clear
-  the Šidák bar for the number of setups tested; `has_edge` without `robust` is tentative — say so.
+- `state`: `at_entry` (the leading plan's trigger has fired and price is at its entry), `waiting`
+  (it has not; `why_not_now` says what is missing), `no_plan` (no levels near price). This is
+  where the plan stands, **not advice**. Never present `at_entry` as a signal to buy.
+- `setups[]`, leading one first (the user's levels when given, else the nearest pullback): `name`,
+  `status`, `trigger` (checkable: "a daily bar closes back above 230.08"), `b1`/`b2` (scale-in
+  entries), `sl`, `t1`/`t2`, each with `basis` (the level's sources or the rule). `alerts[]` are
+  the prices to watch. The levels are conventional places for entries, stops and targets; they
+  are not evidence that price will turn there.
+- `p_t1_random` per setup: how often T1 comes before the stop if the stock moves at random, from
+  where the plan is entered (spot when `at_entry`, else the average entry). The plan averages 0R
+  at random before costs.
+- `backtest` per setup is description, not proof: `signals` (the plan replayed at past signals), `any_day`
+  (the same plan entered on any day: the stock's drift), `trend_only`, `effective_n`. Do not call
+  a positive `signals.expectancy_r` an edge.
+- `calibration`: per-source hold rates on this stock against control levels. Noise; ignore it.
 - `earnings_move` (when a report is ahead): `date` (`estimated` = projected), `implied_move_pct`
   (1σ report move priced by the options), `past[]` reaction-day moves and `past_rms_pct`. The
   contract simulation jumps by `sim_move_pct` after the report and drops IV by that event variance.
   Estimated dates can be a week off: confirm against the company's announcement.
-- `backtest.through_earnings` / `without_earnings`: past signals split by whether a report fell
-  inside the trade.
 - `regime`: trend score and signals, ATR, realized vol, EWMA vol forecast, IV vs forecast RV
   (`vol_pricing` cheap/fair/rich), IV rank once 60+ days are recorded.
-- `contracts` (for the leading setup; `--contracts` forces it on NO TRADE): Monte Carlo of the plan
-  with forecast realized vol and a drift calibrated to the backtest's P(T1 first). Per pick:
-  `net_at_entry`/`limit_at_entry` (priced at the trigger price if waiting), `ev`, `ev_on_risk` (rank
-  key), `ev_no_edge` (what it costs if the setup is worthless), `p_profit`, P&L at SL/T1/T2/flat,
-  `exit_plan`, `why`, `notes`, `live_quotes`, `sizing` (when a portfolio is loaded).
+- `contracts` (always priced for the leading plan): Monte Carlo of the plan on zero-drift paths at
+  forecast realized vol; `p_t1_no_edge` is the share of paths where T1 comes first. Per pick:
+  - `ev_no_edge`: expected P&L if the stock moves at random, after spread and commission.
+  - `ev_if_t1` / `ev_if_not`: the same paths split by whether T1 came before the stop.
+  - `breakeven_p_t1`: how often T1 must come first for the structure to break even.
+  - `edge_needed`: `breakeven_p_t1` minus `p_t1_no_edge`, the ranking key (lowest first). Shares
+    need 0. An option structure that needs +20 points means the user must be right 20 points
+    more often than chance just to get their money back.
+  - `edge_needed` ≤ 0 means it pays at random, which rests on ox's realized-vol forecast being
+    right (not audited). Say so; do not call it free money.
+  - Also `net_at_entry`/`limit_at_entry` (priced at the trigger price if waiting), `p_profit`,
+    P&L at SL/T1/T2/flat, `exit_plan`, `why`, `notes`, `live_quotes`, `sizing`.
 
 ### Your part
 
-1. `ox daemon start`, then `ox pick SYM --json`. If the user gave levels or a direction, pass
-   `--entry/--stop/--t1/--t2/--bias` (adds a "your levels" plan, backtested the same way).
+1. `ox daemon start`, then `ox pick SYM --json`. Pass the user's levels and direction with
+   `--entry/--stop/--t1/--t2/--bias`; without them ox prices a default plan from nearby levels.
 2. **What ox cannot see**: news and catalysts, the macro calendar (FOMC, CPI, jobs) inside the
    holding period, sector moves, and the user's other holdings unless a portfolio is loaded. Keep
    this layer separate from ox's numbers. If it contradicts the plan, say so and re-run with
-   overrides or downgrade the verdict — explain which and why. Never upgrade NO TRADE to ENTER on
-   narrative alone.
+   other levels.
 3. **Live prices**, if you have a broker or market-data connection: take live bid/ask for the top
    picks' legs and push them in, then re-run `ox pick SYM --json` (picks with `live_quotes: true`
    are priced on them; live quotes expire after 30 minutes):
@@ -71,13 +72,15 @@ the write-up.
    (or `{"expiry":"2026-12-18","right":"C","strike":250,...}` per quote). Without live prices, say
    that contract prices are delayed.
 4. **Write it up**:
-   - Verdict and headline first. For WAIT: the trigger in plain words ("not now — if NVDA trades
-     down to 213 (fib 0.382 + 100d SMA) and a daily bar closes back above it"), plus why not now.
-     For NO TRADE: the reason (no edge / drift only / could be luck) and what would change it.
-   - The thesis: ox's `thesis` lines, then your qualitative layer, clearly labelled.
-   - The plan: B1/B2/SL/T1/T2 with `basis` and R:R; the backtest line with its controls.
-   - 1–3 contracts: why this structure for this plan (vol pricing, where the short strike sits vs
-     T1/T2, theta if flat, `ev_no_edge`), limit price, sizing, exit plan.
+   - The odds first: how often T1 comes before the stop at random, and what the best structure
+     needs (`breakeven_p_t1`, `edge_needed`). Put it as the question it is: "you need to be right
+     about 64% of the time; chance gives 42%. What makes this better than chance?"
+   - The plan: B1/B2/SL/T1/T2 with R:R, and for `waiting` the trigger in plain words.
+   - 1–3 contracts: what each costs at random, what it makes if T1 comes first and loses if not,
+     limit price, sizing, exit plan. Prefer the lowest `edge_needed` unless the user wants another
+     shape.
+   - Your qualitative layer, clearly labelled as yours.
+   - Never say ox recommends or confirms a trade. It does not.
    - These are statistics from past prices, not advice; the user decides and places any order.
 
 ## Other commands
@@ -95,8 +98,8 @@ the write-up.
 | Watchlist | `ox watchlist --json`; `ox watchlist import -` (JSON or plain tickers); `ox watchlist clear` |
 | Portfolio | `ox portfolio --json`; `ox portfolio import -` (schema below) |
 | Portfolio risk | `ox risk --json` — backdrop, `book_risk` (1σ daily P&L, market vs company-specific), `directional`, per-underlying Greeks and β, `budget`, flags |
-| Book review | `ox review [SYM ...] --json` — see below |
-| Plan + contracts | `ox pick SYM [--bias long|short] [--entry P --stop P --t1 P --t2 P] [--max-risk USD] [--contracts] [--verbose] --json` |
+| Book review | `ox review --json` — see below |
+| Plan + contracts | `ox pick SYM [--bias long|short] [--entry P --stop P --t1 P --t2 P] [--max-risk USD] [--verbose] --json` |
 | Live option quotes in | `ox ingest quotes -` — bid/ask that `pick` uses for 30 minutes |
 | Overnight bars in | `ox ingest overnight -` — `[{"symbol","source","bars":[{"t","o","h","l","c","v"}]}]`; `ox levels` adds the overnight range for 24 hours |
 | Config | `ox config` (show), `ox config init`, `ox config path` |
@@ -143,22 +146,16 @@ tier → slots and a per-trade target/cap, a 20% cash buffer (soft) and a 10% ex
 - `blocked` is an answer: say which limit and what would free room, or a smaller structure.
 - If `dips_into_buffer` is true, say so explicitly.
 
-## Reviewing the book: hold, close, roll, replace
+## Reviewing the book: hold or close
 
-`ox review --json` judges each holding as if it were a fresh trade: `pick` in the holding's
-direction, then the held contracts simulated through that plan against closing them now. Sunk cost
-is ignored.
+`ox review --json` simulates each holding's contracts through the leading plan for its direction,
+on random paths, against closing them now. Sunk cost is ignored.
 
-- `holdings[]`: `action` HOLD / CLOSE / ROLL with `reasons`; `hold` has `ev_plan`, `ev_no_edge`,
-  `horizon_end`, `theta_day`, `close_friction`. The decision uses `ev_plan` only when the direction
-  has a measured edge, else `ev_no_edge`.
-  - CLOSE: no measured edge and holding is expected to lose > 5% of value (min $10) by the horizon.
-  - ROLL: the edge exists but these contracts lose under it; `roll_to` is the best contract.
-  - HOLD without an edge means holding is cheap, not that it is right: ask for the user's thesis.
-- `candidates[]`: watchlist names (or the symbols given) with ENTER/WAIT verdicts, sized.
-- `replacements[]`: ENTER candidates the book can't fund, paired with the holding whose close
-  funds them for the largest expected `gain`; `gain_no_edge` is the same if the new setup is
-  worthless.
+- `holdings[]`: `action` HOLD / CLOSE with `reasons`; `hold` has `ev_no_edge` (expected change in
+  value from holding if the stock moves at random), `p_better`, `horizon_end`, `theta_day`,
+  `close_friction`.
+  - CLOSE: holding is expected to lose > 5% of value (min $10) by the horizon at random.
+  - HOLD means holding is cheap, not that it is right: ask for the user's thesis.
 
 Present these as proposals: a CLOSE is still the user's call.
 
@@ -167,6 +164,6 @@ Present these as proposals: a CLOSE is still the user's call.
 - Charts include pre-market and after-hours (04:00–20:00 ET); VWAP is anchored at the 09:30 open.
 - `ox levels` strength is relative (0–100) within the symbol; independent kinds of evidence
   agreeing beat one kind repeating. Quote the `sources` when using a level.
-- `ox pick` blocks fresh entries within 5 days of earnings and notes picks that hold through one.
+- `ox pick` warns when earnings are within 5 days and notes picks that hold through one.
 - The daemon records a daily snapshot (IV30, GEX levels, OI) for the watchlist, portfolio and
   benchmarks after each close; IV rank needs 60+ recorded days to count.

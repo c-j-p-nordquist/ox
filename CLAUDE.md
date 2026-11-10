@@ -1,7 +1,8 @@
 # ox — options contract picker
 
-Rust (edition 2021), tokio. Single binary `ox`. The product is `ox pick SYM`: a backtested trade
-plan (ENTER / WAIT with triggers / NO TRADE) and the contracts that fit it. Claude is the main user.
+Rust (edition 2021), tokio. Single binary `ox`. The product is `ox pick SYM`: a trade plan priced
+as if the stock moves at random, and the contracts ranked by how much better than chance the plan
+must be for each to break even. It never says whether to trade. Claude is the main user.
 
 ## Architecture
 
@@ -13,11 +14,10 @@ plan (ENTER / WAIT with triggers / NO TRADE) and the contracts that fit it. Clau
 - `daemon.rs` / `client.rs` — Unix socket in the cache dir (`~/Library/Caches/ox/oxd.sock` on macOS), newline-delimited
   JSON. `Client::connect` uses the daemon when it answers a ping, else runs locally.
 - `analytics/pick/` — the picker: `regime` (trend, vol forecast), `zones` (level sources +
-  walk-forward calibration vs control levels), `setup` (plans + backtest with drift/trend controls
-  and t-tests vs those controls), `contracts` (Monte Carlo of the plan per structure, and of a
-  held position vs closing it), `mod` (verdict, thesis).
-- `analytics/review.rs` — `ox review`: holdings judged as fresh trades (HOLD / CLOSE / ROLL),
-  candidates from the watchlist, and replacements when the book can't fund a better trade.
+  walk-forward hold rates vs control levels), `setup` (plans + their history as description),
+  `contracts` (zero-drift Monte Carlo of the plan per structure: break-even hit rate and edge
+  needed; and of a held position vs closing it), `mod` (plan state, situation).
+- `analytics/review.rs` — `ox review`: each holding HOLD or CLOSE on what holding costs at random.
 - `analytics/` — Black-Scholes (`bs`), GEX + zero-gamma profile (`gex`), indicators, chain views,
   expected moves, max pain. Pure functions; unit-tested.
 - `cli.rs` — one-shot commands; each supports `--json`. `pick_view.rs` is the default `ox pick`
@@ -29,8 +29,10 @@ plan (ENTER / WAIT with triggers / NO TRADE) and the contracts that fit it. Clau
 
 ## Rules
 
-- Statistical honesty is the product: every edge claim needs a control and a sample size, and
-  NO TRADE must stay a real answer. Heavy compute goes in `spawn_blocking` inside the engine and
+- Statistical honesty is the product. ox assumes no edge: a November 2026 audit over 59 tickers
+  found the level sources no better than control levels and the setups at 0R pooled, and one
+  stock's ~20 independent trades cannot show an edge. Do not reintroduce a per-stock edge verdict;
+  an edge claim would need a pooled, out-of-sample test. Heavy compute goes in `spawn_blocking` inside the engine and
   is memoized (the level calibration is cached per bar set).
 - Every new view gets a `--json` form (Claude uses them; see `.claude/skills/ox`).
 - Keep data provider-neutral: normalize into `model.rs` types. Nothing in the core assumes a

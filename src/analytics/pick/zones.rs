@@ -344,14 +344,6 @@ pub struct Zone {
 }
 
 impl Zone {
-    /// Distinct source kinds with a measured edge (lift above 1.1 on 20+ touches).
-    pub fn proven(&self) -> usize {
-        let mut k: Vec<Kind> = self.sources.iter().filter(|s| s.lift > 1.1 && s.n >= 20).map(|s| s.kind).collect();
-        k.sort();
-        k.dedup();
-        k.len()
-    }
-
     pub fn describe(&self) -> String {
         let mut seen = HashSet::new();
         self.sources.iter().filter(|s| seen.insert(s.kind)).map(|s| s.label.clone()).collect::<Vec<_>>().join(" + ")

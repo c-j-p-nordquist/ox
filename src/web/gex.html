@@ -87,9 +87,9 @@ main { padding: 12px 16px 32px; display: grid; gap: 14px; grid-template-columns:
 .side { display: flex; flex-direction: column; gap: 14px; }
 .read p { margin: 0 0 8px; color: var(--ink-2); font-size: 13px; }
 .verdict { display: inline-block; font-weight: 700; font-size: 12px; letter-spacing: .05em; padding: 2px 8px; border-radius: 5px; border: 1px solid; }
-.verdict.enter { color: var(--target); }
-.verdict.wait { color: var(--zero); }
-.verdict.no_trade { color: var(--ink-3); }
+.verdict.at_entry { color: var(--target); }
+.verdict.waiting { color: var(--zero); }
+.verdict.no_plan { color: var(--ink-3); }
 ul.tight { margin: 6px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 13px; }
 ul.tight li { margin-bottom: 4px; }
 .plan { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
@@ -218,7 +218,7 @@ async function load() {
 async function loadPick(sym) {
   state.pick = null;
   state.pickFor = sym;
-  $("pick").innerHTML = '<span class="loading">Running ox pick (backtest)…</span>';
+  $("pick").innerHTML = '<span class="loading">Running ox pick…</span>';
   try {
     const p = await getJSON("/api/pick?symbol=" + encodeURIComponent(sym));
     if (state.pickFor !== sym) return;
@@ -390,7 +390,7 @@ function renderLegend(v) {
   const what = { net: "net GEX $/1% (blue: dealers long gamma)", call: "call GEX $/1%", put: "put GEX $/1% (magnitude)", oi: "open interest, calls + puts" }[m];
   let html = `<span class="mono">${ends[0]}</span><span class="ramp" style="background:${ramp}"></span><span class="mono">${ends[1]}</span><span>${what}; color ∝ √|value|</span>`;
   html += `<span><i style="border-color:${css("--spot")}"></i>spot</span><span><i style="border-color:${css("--zero")};border-top-style:dashed"></i>zero gamma</span>`;
-  if (state.plan && state.pick && state.pick.setups && state.pick.setups[0]) html += `<span><i style="border-color:${css("--plan")};border-top-style:dotted"></i>pick plan: ${esc(state.pick.setups[0].name)}${state.pick.setups[0].has_edge ? "" : " (no measured edge)"}</span>`;
+  if (state.plan && state.pick && state.pick.setups && state.pick.setups[0]) html += `<span><i style="border-color:${css("--plan")};border-top-style:dotted"></i>pick plan: ${esc(state.pick.setups[0].name)} (no edge assumed)</span>`;
   html += `<span>□ ring = 5 largest nodes</span>`;
   $("legend").innerHTML = html;
 }
@@ -490,7 +490,7 @@ function renderStats() {
     + stat("Zero gamma", px(g.zero_gamma), rel(g.zero_gamma, g.spot))
     + stat("Call wall", g.call_wall == null ? "–" : strike(g.call_wall), rel(g.call_wall, g.spot))
     + stat("Put wall", g.put_wall == null ? "–" : strike(g.put_wall), rel(g.put_wall, g.spot));
-  if (p) html += stat("ox pick", `<span class="verdict ${p.verdict}">${p.verdict.replace("_", " ").toUpperCase()}</span>`, p.bias ? "bias " + p.bias : "");
+  if (p) html += stat("ox pick", `<span class="verdict ${p.state}">${p.state.replace("_", " ").toUpperCase()}</span>`, p.bias ? "bias " + p.bias : "");
   $("stats").innerHTML = html;
 }
 
@@ -502,12 +502,12 @@ function renderPick() {
   const p = state.pick;
   if (!p) return;
   const s = p.setups && p.setups[0];
-  let html = `<span class="verdict ${p.verdict}">${p.verdict.replace("_", " ").toUpperCase()}</span> <span class="muted">${esc(p.bias_basis || "")}</span>`;
+  let html = `<span class="verdict ${p.state}">${p.state.replace("_", " ").toUpperCase()}</span> <span class="muted">${esc(p.bias_basis || "")}</span>`;
   html += `<p style="margin:8px 0 0">${esc(p.headline)}</p>`;
   if (p.gamma && p.gamma.note) html += `<p class="muted" style="margin:6px 0 0;font-size:13px">γ: ${esc(p.gamma.note)}</p>`;
   if (s) {
     const r = (k, lv, note = "") => lv ? `<tr><td>${k}</td><td class="num">${px(lv.price)} <span class="muted">${note}</span></td></tr>` : "";
-    html += `<table class="plan"><tr><td colspan="2" class="muted">${esc(s.name)} · ${esc(s.status)}${s.has_edge ? "" : " · no measured edge"}</td></tr>`
+    html += `<table class="plan"><tr><td colspan="2" class="muted">${esc(s.name)} · T1 before stop ${(s.p_t1_random * 100).toFixed(0)}% at random</td></tr>`
       + r("B1", s.b1) + r("B2", s.b2) + r("Stop", s.sl) + r("T1", s.t1, `${s.rr_t1.toFixed(1)}R`) + r("T2", s.t2, `${s.rr_t2.toFixed(1)}R`) + "</table>";
     if (s.trigger) html += `<p class="muted" style="margin:8px 0 0;font-size:13px">Trigger: ${esc(s.trigger)}</p>`;
   }
