@@ -3,8 +3,8 @@
 //! Price paths start at the plan's entry and move at random: no drift beyond the risk-free rate
 //! the options are priced with (so a fairly priced call or put averages zero), forecast *realized*
 //! volatility, so the difference between implied and realized vol shows up in the results. Each
-//! path is managed like the plan: half off at T1 with the stop to breakeven, the rest at T2,
-//! everything at the time stop. Every candidate is marked to Black-Scholes at those exit points
+//! path is managed like the plan: out on a daily close beyond the stop, half off at T1 with the
+//! stop to breakeven, the rest at T2, everything at the time stop. Every candidate is marked to Black-Scholes at those exit points
 //! (sticky-strike IV, lower after an earnings date), paying half the bid/ask spread and commission
 //! each way.
 //!
@@ -178,6 +178,10 @@ pub struct ContractsReport {
     pub sim_vol: f64,
     /// Share of random paths on which T1 comes before the stop.
     pub p_t1_no_edge: f64,
+    /// Average price the stop fills at on the random paths. The stop is a daily close beyond SL,
+    /// so this is past SL: the loss when stopped is more than 1R.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_stop_fill: Option<f64>,
     pub time_stop: NaiveDate,
     pub min_expiry: NaiveDate,
     pub expirations: Vec<NaiveDate>,
@@ -248,13 +252,21 @@ fn shocks(n: usize, hold: usize) -> Vec<Vec<f64>> {
     out
 }
 
-/// Manage one path like the plan; daily closes with the barrier shift for discrete monitoring.
+/// Manage one path like the plan, on daily closes.
+///
+/// The stop is the plan's own rule, a daily close beyond SL, so it is checked on the close and
+/// fills there: past the stop, by about 0.58 of a day's move on average. The targets and the
+/// breakeven stop after T1 are resting orders that fill on a touch at their level; daily closes
+/// miss intraday touches, so those levels are moved inward (Broadie–Glasserman) to stand in for
+/// continuous monitoring.
 fn manage(p: &Plan, shocks: &[f64], mu: f64, sigma_d: f64, out: &mut Vec<Exit>) -> bool {
     out.clear();
-    // Broadie–Glasserman: discrete daily checks miss intraday touches; move barriers inward.
     let shift = (0.5826 * sigma_d).exp();
-    let (sl, t1, t2) =
-        if p.d > 0.0 { (p.sl * shift, p.t1 / shift, p.t2 / shift) } else { (p.sl / shift, p.t1 * shift, p.t2 * shift) };
+    let (be, t1, t2) = if p.d > 0.0 {
+        (p.entry * shift, p.t1 / shift, p.t2 / shift)
+    } else {
+        (p.entry / shift, p.t1 * shift, p.t2 * shift)
+    };
     let mut s = p.entry;
     let mut half = false;
     let mut hit_t1 = false;
@@ -268,9 +280,12 @@ fn manage(p: &Plan, shocks: &[f64], mu: f64, sigma_d: f64, out: &mut Vec<Exit>) 
         }
         // A report gaps through levels: orders fill at the price after the gap, not at the level.
         let fill = |level: f64| if gapped { s } else { level };
-        let stop = if half { p.entry } else { sl };
-        if p.d * (s - stop) <= 0.0 {
-            out.push(Exit { day, price: fill(if half { p.entry } else { p.sl }), frac: if half { 0.5 } else { 1.0 } });
+        if half && p.d * (s - be) <= 0.0 {
+            out.push(Exit { day, price: fill(p.entry), frac: 0.5 });
+            return hit_t1;
+        }
+        if !half && p.d * (s - p.sl) <= 0.0 {
+            out.push(Exit { day, price: s, frac: 1.0 });
             return hit_t1;
         }
         if !half && p.d * (s - t1) >= 0.0 {
@@ -297,6 +312,16 @@ fn simulate(p: &Plan, shocks: &[Vec<f64>], mu: f64, sigma_d: f64) -> (Vec<Vec<Ex
         all.push(buf.clone());
     }
     (all, hit)
+}
+
+/// Mean fill of the paths that ended on the stop (the whole position out at or beyond SL).
+fn avg_stop_fill(p: &Plan, paths: &[Vec<Exit>]) -> Option<f64> {
+    let fills: Vec<f64> = paths
+        .iter()
+        .filter(|x| x.len() == 1 && x[0].frac == 1.0 && p.d * (x[0].price - p.sl) <= 0.0)
+        .map(|x| x[0].price)
+        .collect();
+    (!fills.is_empty()).then(|| fills.iter().sum::<f64>() / fills.len() as f64)
 }
 
 fn share(hit: &[bool]) -> f64 {
@@ -510,6 +535,16 @@ pub fn rank(
     let shocks = shocks(PATHS, plan.hold);
     let (paths, hit) = simulate(&plan, &shocks, daily_drift(r), sigma_d);
     let p0 = share(&hit);
+    let avg_stop_fill = avg_stop_fill(&plan, &paths);
+    if let Some(fill) = avg_stop_fill {
+        let r_lost = (entry - fill) / (entry - plan.sl);
+        if r_lost > 1.1 {
+            warnings.push(format!(
+                "the stop is a daily close beyond {:.2}, which fills past it: at {fill:.2} on average at random, a loss of {r_lost:.1}R rather than 1R",
+                plan.sl
+            ));
+        }
+    }
 
     // Timestamps per simulated day and per contract expiry, so pricing in the loop is pure math.
     const YEAR: f64 = 365.0 * 86_400.0;
@@ -710,6 +745,7 @@ pub fn rank(
         entry,
         sim_vol,
         p_t1_no_edge: p0,
+        avg_stop_fill,
         time_stop,
         min_expiry,
         expirations,
@@ -936,12 +972,16 @@ mod tests {
 
     #[test]
     fn random_walk_hit_rate_matches_the_distances() {
-        // Driftless: T1 before the stop about stop / (stop + t1) of the time, less the paths the
-        // time stop cuts short.
+        // Driftless: T1 before the stop about stop / (stop + t1) of the time, where the stop's
+        // distance is to where a stop on the close fills: past SL by 0.58 of a day's move.
         let p = Plan { hold: 250, ..plan() };
-        let shocks = super::shocks(4000, p.hold);
-        let got = share(&simulate(&p, &shocks, 0.0, 0.4 / 252f64.sqrt()).1);
-        assert!((got - 5.0 / 15.0).abs() < 0.04, "{got}");
+        let sigma_d = 0.4 / 252f64.sqrt();
+        let (paths, hit) = simulate(&p, &super::shocks(20_000, p.hold), 0.0, sigma_d);
+        let past = 0.5826 * sigma_d * p.sl;
+        let got = share(&hit);
+        assert!((got - (5.0 + past) / (15.0 + past)).abs() < 0.02, "{got}");
+        let fill = avg_stop_fill(&p, &paths).unwrap();
+        assert!((fill - (p.sl - past)).abs() < 0.15, "{fill} vs {}", p.sl - past);
     }
 
     #[test]

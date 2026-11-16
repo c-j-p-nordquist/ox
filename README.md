@@ -107,8 +107,10 @@ what ox can't see (news, catalysts, macro) and keeps it separate from the number
    Otherwise: a pullback into the nearest level, a deeper pullback, a breakout through the level
    ahead and an entry now; without a trend, range fades both ways. Each has B1/B2 (scale-in), SL,
    and T1/T2. The plan is AT ENTRY or WAITING for its trigger; that is its state, not advice.
-4. **Odds at random.** With no drift, T1 comes before the stop (entry − SL) / (T1 − SL) of the
-   time and the plan averages 0R before costs. The plan's history on this stock (past signals, and
+4. **Odds at random.** Simulated with the plan's own rules (the stop on a daily close, the time
+   stop). Without those, T1 comes before the stop (entry − SL) / (T1 − SL) of the time. Either way
+   the plan averages 0R before costs. A stop on the close fills past SL, so a stopped trade loses
+   more than 1R; ox says how much. The plan's history on this stock (past signals, and
    the same plan entered on any day) is shown as description, not as evidence of an edge.
 5. **Contracts.** Long calls/puts, debit spreads with the short strike at the plan's targets,
    butterflies centered on T1/T2, and credit spreads with the short strike beyond the stop. Each is

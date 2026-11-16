@@ -1,8 +1,9 @@
 //! Trade plans built from measured zones, and a backtest of each plan's exact shape.
 //!
 //! A plan has scale-in entries (B1, B2), a stop (SL) beyond the level that invalidates it, and
-//! two targets (T1, T2). Management is fixed so it can be tested: half off at T1 with the stop
-//! moved to breakeven, the rest at T2, everything closed at the time stop.
+//! two targets (T1, T2). Management is fixed so it can be tested: out on a daily close beyond the
+//! stop (at that close), half off at T1 with the stop moved to breakeven, the rest at T2,
+//! everything closed at the time stop.
 //!
 //! The history replays that plan on the stock's own past at every day the setup's conditions
 //! held, using the zones known on that day, next to two references: the driftless probability of
@@ -207,22 +208,29 @@ fn replay(b: &[Bar], j: usize, entry: f64, atr: f64, d: f64, sh: Shape, hold: us
     for (k, x) in b.iter().enumerate().take(end).skip(j + 1) {
         let days = k - j;
         let (adverse, favorable) = if d > 0.0 { (x.l, x.h) } else { (x.h, x.l) };
-        let stop = if half_done.is_some() { entry } else { sl };
-        // Stop first within a bar (conservative); a gap through it fills at the open.
-        if d * (adverse - stop) <= 0.0 {
-            let fill = if d * (x.o - stop) < 0.0 { x.o } else { stop };
-            let rest = if half_done.is_some() { 0.5 } else { 1.0 };
+        // After T1 the rest has a resting stop at the entry: it goes first within a bar
+        // (conservative), and a gap through it fills at the open.
+        if half_done.is_some() && d * (adverse - entry) <= 0.0 {
+            let fill = if d * (x.o - entry) < 0.0 { x.o } else { entry };
             return Some(Trade {
-                r: banked + rest * r_at(fill),
+                r: banked + 0.5 * r_at(fill),
                 t1_days: half_done,
                 t2_days: None,
-                stopped: half_done.is_none(),
+                stopped: false,
                 exit: k,
             });
         }
         if half_done.is_none() && d * (favorable - t1) >= 0.0 {
             half_done = Some(days);
             banked += 0.5 * r_at(t1);
+            // T1 and a close back through the entry in one bar: the breakeven stop took the rest.
+            if d * (x.c - entry) <= 0.0 && d * (favorable - t2) < 0.0 {
+                return Some(Trade { r: banked, t1_days: half_done, t2_days: None, stopped: false, exit: k });
+            }
+        }
+        // Before T1 the stop is the plan's rule: a daily close beyond SL, filled at that close.
+        if half_done.is_none() && d * (x.c - sl) <= 0.0 {
+            return Some(Trade { r: r_at(x.c), t1_days: None, t2_days: None, stopped: true, exit: k });
         }
         if half_done.is_some() && d * (favorable - t2) >= 0.0 {
             return Some(Trade {
@@ -728,10 +736,11 @@ mod tests {
         let b = bars(&[100.0, 102.0, 104.0]);
         let t = replay(&b, 0, 100.0, 1.0, 1.0, sh, 20).unwrap();
         assert!((t.r - 3.0).abs() < 1e-9, "{}", t.r);
-        // Stopped before T1.
+        // Stopped before T1: the low of 98.9 on day 1 trades through the stop at 99 but closes
+        // above it; the close at 98 on day 2 is the stop, filled there for -2R.
         let b = bars(&[100.0, 99.4, 98.0]);
         let t = replay(&b, 0, 100.0, 1.0, 1.0, sh, 20).unwrap();
-        assert!(t.stopped && (t.r + 1.0).abs() < 1e-9, "{t:?}");
+        assert!(t.stopped && t.exit == 2 && (t.r + 2.0).abs() < 1e-9, "{t:?}");
     }
 
     #[test]
