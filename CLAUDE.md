@@ -15,7 +15,7 @@ must be for each to break even. It never says whether to trade. Claude is the ma
   JSON. `Client::connect` uses the daemon when it answers a ping, else runs locally.
 - `analytics/pick/` — the picker: `regime` (trend, vol forecast), `zones` (level sources +
   walk-forward hold rates vs control levels), `setup` (plans + their history as description),
-  `contracts` (zero-drift Monte Carlo of the plan per structure: break-even hit rate and edge
+  `contracts` (no-edge Monte Carlo of the plan per structure: break-even hit rate and edge
   needed; and of a held position vs closing it), `mod` (plan state, situation).
 - `analytics/review.rs` — `ox review`: each holding HOLD or CLOSE on what holding costs at random.
 - `analytics/` — Black-Scholes (`bs`), GEX + zero-gamma profile (`gex`), indicators, chain views,

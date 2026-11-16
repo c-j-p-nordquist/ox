@@ -112,8 +112,8 @@ what ox can't see (news, catalysts, macro) and keeps it separate from the number
    the same plan entered on any day) is shown as description, not as evidence of an edge.
 5. **Contracts.** Long calls/puts, debit spreads with the short strike at the plan's targets,
    butterflies centered on T1/T2, and credit spreads with the short strike beyond the stop. Each is
-   run through a Monte Carlo of the plan on zero-drift paths: forecast realized vol, half off at
-   T1, stop to breakeven, rest at T2, time stop, Black-Scholes marks with sticky-strike IV (lower
+   run through a Monte Carlo of the plan on random paths (no drift beyond the risk-free rate):
+   forecast realized vol, half off at T1, stop to breakeven, rest at T2, time stop, Black-Scholes marks with sticky-strike IV (lower
    after earnings), half the spread and commission each way. Per structure: the expected result at
    random, the result when T1 comes first and when it does not, and from those how often T1 must
    come first to break even. That minus the random rate is the edge you have to bring; the ranking

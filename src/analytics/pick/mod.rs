@@ -238,10 +238,11 @@ pub fn pick(inp: &Input, p: &PickParams) -> anyhow::Result<PickReport> {
     let event =
         earnings_move.as_ref().map(|m| contracts::Event { date: m.date, sd: m.sim_move_pct.map(|x| x / 100.0) });
     for st in &mut setups {
-        // How often a driftless price reaches T1 before the stop within the plan's time stop, on
+        // How often a price moving at random reaches T1 before the stop within the plan's time stop, on
         // the same paths the contracts are priced on. Without a time stop it is the ratio of the
         // distances; a far target the time stop cuts short comes in well below that.
-        st.p_t1_random = contracts::random_hit_rate(st, spot, sim_vol(&reg, st.backtest.hold_days), event, inp.now);
+        st.p_t1_random =
+            contracts::random_hit_rate(st, spot, sim_vol(&reg, st.backtest.hold_days), event, inp.now, inp.r);
         let bt = &st.backtest;
         let mut why = vec![format!("trend: {} — {}", reg.trend, trend_brief)];
         if let Some(z) = &st.b1.zone {

@@ -45,8 +45,8 @@ stock moves at random, which is the bar the user's own idea has to clear.
   Estimated dates can be a week off: confirm against the company's announcement.
 - `regime`: trend score and signals, ATR, realized vol, EWMA vol forecast, IV vs forecast RV
   (`vol_pricing` cheap/fair/rich), IV rank once 60+ days are recorded.
-- `contracts` (always priced for the leading plan): Monte Carlo of the plan on zero-drift paths at
-  forecast realized vol; `p_t1_no_edge` is the share of paths where T1 comes first. Per pick:
+- `contracts` (always priced for the leading plan): Monte Carlo of the plan on random paths (no
+  drift beyond the risk-free rate) at forecast realized vol; `p_t1_no_edge` is the share of paths where T1 comes first. Per pick:
   - `ev_no_edge`: expected P&L if the stock moves at random, after spread and commission.
   - `ev_if_t1` / `ev_if_not`: the same paths split by whether T1 came before the stop.
   - `breakeven_p_t1`: how often T1 must come first for the structure to break even.

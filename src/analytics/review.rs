@@ -2,7 +2,7 @@
 //!
 //! No plan is assumed to have an edge (see [`super::pick::setup`]), so a holding is not judged
 //! on whether its direction "has a setup". The held contracts are simulated through the leading
-//! plan for the holding's direction on zero-drift paths, against closing them now
+//! plan for the holding's direction on random paths (no drift beyond the risk-free rate), against closing them now
 //! ([`HoldEval`]). Sunk cost does not enter; only what holding is expected to add from here.
 //!
 //! - HOLD: holding costs little at random. Whether to keep it rests on the user's own thesis.

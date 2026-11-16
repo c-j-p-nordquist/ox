@@ -1,6 +1,7 @@
 //! Contracts for a plan, ranked by simulating the plan itself.
 //!
-//! Price paths start at the plan's entry and move at random: zero drift, forecast *realized*
+//! Price paths start at the plan's entry and move at random: no drift beyond the risk-free rate
+//! the options are priced with (so a fairly priced call or put averages zero), forecast *realized*
 //! volatility, so the difference between implied and realized vol shows up in the results. Each
 //! path is managed like the plan: half off at T1 with the stop to breakeven, the rest at T2,
 //! everything at the time stop. Every candidate is marked to Black-Scholes at those exit points
@@ -134,7 +135,8 @@ pub struct Pick {
     pub limit_at_entry: f64,
     pub max_loss: f64,
     pub max_gain: Option<f64>,
-    /// Expected P&L per unit if the stock moves at random (zero drift), after friction.
+    /// Expected P&L per unit if the stock moves at random (no drift beyond the risk-free rate),
+    /// after friction.
     pub ev_no_edge: f64,
     /// The random paths split by outcome: mean P&L when T1 came before the stop, and when it
     /// did not.
@@ -174,7 +176,7 @@ pub struct ContractsReport {
     pub entry: f64,
     /// Forecast realized vol used for the paths.
     pub sim_vol: f64,
-    /// Share of random (zero-drift) paths on which T1 comes before the stop.
+    /// Share of random paths on which T1 comes before the stop.
     pub p_t1_no_edge: f64,
     pub time_stop: NaiveDate,
     pub min_expiry: NaiveDate,
@@ -336,9 +338,24 @@ fn plan_of(setup: &Setup, spot: f64, earnings: Option<Event>, today: NaiveDate) 
 
 /// Share of random paths on which T1 comes before the stop within the plan's time stop: the same
 /// paths [`rank`] prices contracts on, so a report shows one number for it.
-pub fn random_hit_rate(setup: &Setup, spot: f64, sim_vol: f64, earnings: Option<Event>, now: DateTime<Utc>) -> f64 {
+pub fn random_hit_rate(
+    setup: &Setup,
+    spot: f64,
+    sim_vol: f64,
+    earnings: Option<Event>,
+    now: DateTime<Utc>,
+    r: f64,
+) -> f64 {
     let plan = plan_of(setup, spot, earnings, now.with_timezone(&New_York).date_naive());
-    share(&simulate(&plan, &shocks(PATHS, plan.hold), 0.0, sim_vol / 252f64.sqrt()).1)
+    share(&simulate(&plan, &shocks(PATHS, plan.hold), daily_drift(r), sim_vol / 252f64.sqrt()).1)
+}
+
+/// Drift per trading day of a stock that moves at random. Options are priced with the rate `r`,
+/// which puts the forward above spot; a stock with no drift at all would make every call lose and
+/// every put gain by the interest on its strike, tilting long plans against short ones. Drifting
+/// at `r` is the no-edge case: a fairly priced option then averages zero.
+fn daily_drift(r: f64) -> f64 {
+    r / 252.0
 }
 
 /// IV that reprices `c`'s mid with the underlying at `quote_spot`, the price its quote was taken
@@ -488,10 +505,10 @@ pub fn rank(
         }
     }
 
-    // Paths with zero drift: the stock moving at random.
+    // The stock moving at random: no drift beyond the rate the options are priced with.
     let sigma_d = sim_vol / 252f64.sqrt();
     let shocks = shocks(PATHS, plan.hold);
-    let (paths, hit) = simulate(&plan, &shocks, 0.0, sigma_d);
+    let (paths, hit) = simulate(&plan, &shocks, daily_drift(r), sigma_d);
     let p0 = share(&hit);
 
     // Timestamps per simulated day and per contract expiry, so pricing in the loop is pure math.
@@ -715,7 +732,7 @@ pub struct HoldEval {
     /// Value of the position now at mid, $.
     pub value_now: f64,
     /// Expected change in value from holding through the plan's exits instead of closing now, $,
-    /// if the stock moves at random (zero drift). Both pay the exit spread once, so it nets out.
+    /// if the stock moves at random (no drift beyond the risk-free rate). Both pay the exit spread once, so it nets out.
     pub ev_no_edge: f64,
     /// Share of random paths that end above today's value.
     pub p_better: f64,
@@ -761,7 +778,7 @@ pub fn hold_value(
     };
     let sigma_d = sim_vol(hold) / 252f64.sqrt();
     let shocks = shocks(PATHS, plan.hold);
-    let (paths, _) = simulate(&plan, &shocks, 0.0, sigma_d);
+    let (paths, _) = simulate(&plan, &shocks, daily_drift(r), sigma_d);
 
     let ivs: Vec<f64> = legs.iter().map(|l| l.contract.map_or(0.0, |c| quoted_iv(c, quote_spot, now, r))).collect();
     let leg_value = |k: usize, s: f64, day: usize| -> f64 {
@@ -864,7 +881,7 @@ fn annotate(
         ),
     };
     if pk.ev_no_edge < -0.15 * pk.max_loss {
-        pk.notes.push(format!("costly at random: {:+.0} expected with zero drift", pk.ev_no_edge));
+        pk.notes.push(format!("costly at random: {:+.0} expected with no edge", pk.ev_no_edge));
     }
     if pk.edge_needed <= 0.0 {
         pk.notes.push(format!(
@@ -1129,12 +1146,16 @@ mod consistency {
     /// Strikes 60–140 whose quotes are exact model prices at `quoted_at` and 40% IV (no interest),
     /// while the provider's IV field says `iv_field`.
     fn chain(quoted_at: f64, iv_field: f64) -> ChainSnapshot {
+        chain_at_rate(quoted_at, iv_field, 0.0)
+    }
+
+    fn chain_at_rate(quoted_at: f64, iv_field: f64, r: f64) -> ChainSnapshot {
         let t = bs::years_to_expiry(expiry(), now());
         let mut contracts = Vec::new();
         for i in 0..=32 {
             let k = 60.0 + 2.5 * i as f64;
             for right in [Right::Call, Right::Put] {
-                let px = bs::greeks(right, quoted_at, k, t, 0.0, 0.0, 0.40).price;
+                let px = bs::greeks(right, quoted_at, k, t, r, 0.0, 0.40).price;
                 contracts.push(OptionContract {
                     symbol: format!("X{k}{right:?}"),
                     root: "X".into(),
@@ -1171,8 +1192,12 @@ mod consistency {
 
     /// Every structure, at 40% realized vol, no interest and no costs.
     fn picks(setup: &Setup, chain: &ChainSnapshot, spot: f64) -> ContractsReport {
+        picks_at_rate(setup, chain, spot, 0.0)
+    }
+
+    fn picks_at_rate(setup: &Setup, chain: &ChainSnapshot, spot: f64, r: f64) -> ContractsReport {
         let p = ContractParams { limit: 400, min_oi: 1.0, max_spread: 1.0, max_risk: None, commission: 0.0 };
-        rank(chain, setup, spot, 0.40, None, &p, now(), 0.0, &Default::default())
+        rank(chain, setup, spot, 0.40, None, &p, now(), r, &Default::default())
     }
 
     /// Expected result within 1.5% of the risk, and where the result turns on T1 against the stop,
@@ -1199,6 +1224,15 @@ mod consistency {
     fn a_fairly_priced_chain_needs_no_edge() {
         assert_no_edge(&picks(&long(), &chain(100.0, 0.40), 100.0));
         assert_no_edge(&picks(&short(), &chain(100.0, 0.40), 100.0));
+    }
+
+    #[test]
+    fn interest_does_not_favor_puts_over_calls() {
+        // With a 4% rate the forward is above spot. A stock with no drift at all would make calls
+        // lose and puts gain; drifting at the rate, neither does.
+        let ch = chain_at_rate(100.0, 0.40, 0.04);
+        assert_no_edge(&picks_at_rate(&long(), &ch, 100.0, 0.04));
+        assert_no_edge(&picks_at_rate(&short(), &ch, 100.0, 0.04));
     }
 
     #[test]
@@ -1274,6 +1308,6 @@ mod consistency {
     #[test]
     fn one_random_hit_rate_per_plan() {
         let rep = picks(&long(), &chain(100.0, 0.40), 100.0);
-        assert_eq!(random_hit_rate(&long(), 100.0, 0.40, None, now()), rep.p_t1_no_edge);
+        assert_eq!(random_hit_rate(&long(), 100.0, 0.40, None, now(), 0.0), rep.p_t1_no_edge);
     }
 }
