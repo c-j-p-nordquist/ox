@@ -150,8 +150,8 @@ pub struct Setup {
     pub risk_per_share: f64,
     pub rr_t1: f64,
     pub rr_t2: f64,
-    /// How often T1 comes before the stop if the stock moves at random, from where the plan is
-    /// entered: spot when it is at its entry, else the average entry.
+    /// How often T1 comes before the stop within the time stop if the stock moves at random, from
+    /// where the plan is entered: spot when it is at its entry, else the average entry.
     pub p_t1_random: f64,
     /// Zones between entry and T1 that price must get through.
     pub obstacles: Vec<PlanLevel>,

@@ -231,10 +231,19 @@ struct Plan {
     jump: Option<(usize, f64)>,
 }
 
-/// Shocks per path: one per day plus one for an earnings jump.
+/// Shocks per path: one per day plus one for an earnings jump. Paths come in mirrored pairs
+/// (antithetic), so the sample has no net direction of its own: without that, 3000 paths carry
+/// about a point of noise in the edge a structure needs, in proportion to its delta.
 fn shocks(n: usize, hold: usize) -> Vec<Vec<f64>> {
     let mut rng = Rng(0x0A11_CE5E_ED00_0001);
-    (0..n).map(|_| rng.normals(hold + 1)).collect()
+    let mut out = Vec::with_capacity(n + 1);
+    while out.len() < n {
+        let z = rng.normals(hold + 1);
+        out.push(z.iter().map(|x| -x).collect());
+        out.push(z);
+    }
+    out.truncate(n);
+    out
 }
 
 /// Manage one path like the plan; daily closes with the barrier shift for discrete monitoring.
@@ -250,21 +259,25 @@ fn manage(p: &Plan, shocks: &[f64], mu: f64, sigma_d: f64, out: &mut Vec<Exit>) 
     for (k, z) in shocks.iter().enumerate().take(p.hold) {
         s *= (mu - 0.5 * sigma_d * sigma_d + sigma_d * z).exp();
         let day = k + 1;
+        let mut gapped = false;
         if let Some((_, sd)) = p.jump.filter(|(jd, _)| *jd == day) {
             s *= (sd * shocks[p.hold] - 0.5 * sd * sd).exp();
+            gapped = true;
         }
+        // A report gaps through levels: orders fill at the price after the gap, not at the level.
+        let fill = |level: f64| if gapped { s } else { level };
         let stop = if half { p.entry } else { sl };
         if p.d * (s - stop) <= 0.0 {
-            out.push(Exit { day, price: if half { p.entry } else { p.sl }, frac: if half { 0.5 } else { 1.0 } });
+            out.push(Exit { day, price: fill(if half { p.entry } else { p.sl }), frac: if half { 0.5 } else { 1.0 } });
             return hit_t1;
         }
         if !half && p.d * (s - t1) >= 0.0 {
             half = true;
             hit_t1 = true;
-            out.push(Exit { day, price: p.t1, frac: 0.5 });
+            out.push(Exit { day, price: fill(p.t1), frac: 0.5 });
         }
         if half && p.d * (s - t2) >= 0.0 {
-            out.push(Exit { day, price: p.t2, frac: 0.5 });
+            out.push(Exit { day, price: fill(p.t2), frac: 0.5 });
             return hit_t1;
         }
     }
@@ -306,6 +319,44 @@ fn at_close(date: NaiveDate) -> DateTime<Utc> {
         .unwrap()
 }
 
+/// The plan as simulated: from spot when it is at its entry, else from its average entry.
+fn plan_of(setup: &Setup, spot: f64, earnings: Option<Event>, today: NaiveDate) -> Plan {
+    let entering_now = setup.status == super::setup::Status::Enter;
+    let hold = setup.backtest.hold_days;
+    Plan {
+        d: setup.direction.d(),
+        entry: if entering_now { spot } else { setup.avg_entry },
+        sl: setup.sl.price,
+        t1: setup.t1.price,
+        t2: setup.t2.price,
+        hold,
+        jump: earnings.and_then(|e| Some((e.day(today, hold)?, e.sd?))),
+    }
+}
+
+/// Share of random paths on which T1 comes before the stop within the plan's time stop: the same
+/// paths [`rank`] prices contracts on, so a report shows one number for it.
+pub fn random_hit_rate(setup: &Setup, spot: f64, sim_vol: f64, earnings: Option<Event>, now: DateTime<Utc>) -> f64 {
+    let plan = plan_of(setup, spot, earnings, now.with_timezone(&New_York).date_naive());
+    share(&simulate(&plan, &shocks(PATHS, plan.hold), 0.0, sim_vol / 252f64.sqrt()).1)
+}
+
+/// IV that reprices `c`'s mid with the underlying at `quote_spot`, the price its quote was taken
+/// at; the provider's IV when the mid is outside what the model can price.
+fn quoted_iv(c: &OptionContract, quote_spot: f64, now: DateTime<Utc>, r: f64) -> f64 {
+    // Without a two-sided quote the "mid" is the last trade, from an unknown time and price.
+    if !two_sided(c) {
+        return c.iv;
+    }
+    bs::implied_vol(c.right, c.mid(), quote_spot, c.strike, bs::years_to_expiry(c.expiry, now), r, 0.0)
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .unwrap_or(c.iv)
+}
+
+fn two_sided(c: &OptionContract) -> bool {
+    c.bid > 0.0 && c.ask > 0.0
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn rank(
     chain: &ChainSnapshot,
@@ -322,10 +373,8 @@ pub fn rank(
     let today = now.with_timezone(&New_York).date_naive();
     let entering_now = setup.status == super::setup::Status::Enter;
     // The plan's levels are prices; only the entry moves when entering now.
-    let entry = if entering_now { spot } else { setup.avg_entry };
-    let hold = setup.backtest.hold_days;
-    let jump = earnings.and_then(|e| Some((e.day(today, hold)?, e.sd?)));
-    let plan = Plan { d, entry, sl: setup.sl.price, t1: setup.t1.price, t2: setup.t2.price, hold, jump };
+    let plan = plan_of(setup, spot, earnings, today);
+    let entry = plan.entry;
     let time_stop = trading_to_date(today, plan.hold as f64);
     // Expiries must outlive the time stop by a week, so no leg is in its last-week decay.
     let min_expiry = time_stop + Duration::days(7);
@@ -346,6 +395,17 @@ pub fn rank(
     };
     let contracts: Vec<&OptionContract> =
         chain.contracts.iter().filter(|c| expirations.contains(&c.expiry) && liquid(c)).collect();
+    // Quotes can be older than `spot` (delayed, or from the last close while spot is pre/post
+    // market). Each contract is modelled from the price its quote was taken at, with the IV that
+    // quote implies there, so the model agrees with the market before anything is simulated.
+    let quote_spot = |c: &OptionContract| if live.contains(&c.symbol) { chain.spot } else { chain.quote_spot() };
+    let ivs: Vec<f64> = contracts.iter().map(|c| quoted_iv(c, quote_spot(c), now, r)).collect();
+    if !expirations.is_empty() && !chain.contracts.iter().any(|c| expirations.contains(&c.expiry) && two_sided(c)) {
+        warnings.push(
+            "no option in these expirations has a two-sided quote (bid and ask are empty before the open): contracts cannot be priced until the session opens or live quotes are ingested (`ox ingest quotes`)"
+                .into(),
+        );
+    }
     let mut cands: Vec<Cand> = Vec::new();
     // Strike distances below are in units of the plan's risk per share.
     let unit = setup.risk_per_share.max(1e-9);
@@ -365,7 +425,7 @@ pub fn rank(
         let k = |i: usize| contracts[i].strike;
         let delta_at_entry = |i: usize| {
             let c = contracts[i];
-            bs::greeks(c.right, entry, c.strike, bs::years_to_expiry(c.expiry, now), r, 0.0, c.iv).delta.abs()
+            bs::greeks(c.right, entry, c.strike, bs::years_to_expiry(c.expiry, now), r, 0.0, ivs[i]).delta.abs()
         };
         let (single, debit_spread, fly) = if d > 0.0 {
             (Structure::LongCall, Structure::CallDebitSpread, Structure::CallButterfly)
@@ -444,13 +504,13 @@ pub fn rank(
         .collect();
     let expiry_ts: Vec<f64> = contracts.iter().map(|c| at_close(c.expiry).timestamp() as f64).collect();
     let iv_after: Vec<f64> =
-        contracts.iter().map(|c| earnings.map_or(c.iv, |e| e.iv_after(c.iv, c.expiry, now))).collect();
+        contracts.iter().zip(&ivs).map(|(c, &iv)| earnings.map_or(iv, |e| e.iv_after(iv, c.expiry, now))).collect();
     let value_at = |i: usize, s: f64, day: usize| -> f64 {
         let c = contracts[i];
         let (date, ts) = days[day.min(plan.hold)];
         let iv = match earnings {
             Some(e) if date > e.date && c.expiry > e.date && today <= e.date => iv_after[i],
-            _ => c.iv,
+            _ => ivs[i],
         };
         bs::value(c.right, s, c.strike, (expiry_ts[i] - ts) / YEAR, r, iv)
     };
@@ -461,10 +521,16 @@ pub fn rank(
     for cand in &cands {
         let sign = |s: Side| if s == Side::Buy { 1.0 } else { -1.0 };
         let qty = |q: u32| q as f64;
-        // Entry: today's mid adjusted by the model's change from spot to the entry price.
+        // Entry: the quoted mid adjusted by the model's change from the price the quotes were
+        // taken at to the entry price.
         let net_mid_now: f64 = cand.legs.iter().map(|&(i, s, q)| sign(s) * qty(q) * contracts[i].mid()).sum();
         let model = |s: f64| -> f64 { cand.legs.iter().map(|&(i, sd, q)| sign(sd) * qty(q) * value_at(i, s, 0)).sum() };
-        let net_at_entry = net_mid_now + model(entry) - model(spot);
+        let model_at_quote: f64 =
+            cand.legs.iter().map(|&(i, sd, q)| sign(sd) * qty(q) * value_at(i, quote_spot(contracts[i]), 0)).sum();
+        // The model's own entry value is the cost basis of every simulated exit: where the model
+        // cannot match a quote, the gap between them must not show up as profit or loss.
+        let model_entry = model(entry);
+        let net_at_entry = net_mid_now + model_entry - model_at_quote;
         let contracts_n: f64 = cand.legs.iter().map(|&(_, _, q)| qty(q)).sum();
         let spread_cost: f64 = cand.legs.iter().map(|&(i, _, q)| qty(q) * half_spread(i)).sum::<f64>() * 100.0;
         let friction = 2.0 * spread_cost + 2.0 * contracts_n * p.commission;
@@ -492,7 +558,7 @@ pub fn rank(
             cand.legs.iter().map(|&(i, sd, q)| sign(sd) * qty(q) * value_at(i, e.price, e.day)).sum()
         };
         let path_pnl = |exits: &[Exit]| -> f64 {
-            exits.iter().map(|e| e.frac * (exit_value(e) - net_at_entry) * 100.0).sum::<f64>() - friction
+            exits.iter().map(|e| e.frac * (exit_value(e) - model_entry) * 100.0).sum::<f64>() - friction
         };
         let pnls: Vec<f64> = paths.iter().map(|x| path_pnl(x)).collect();
         let ev_no_edge = pnls.iter().sum::<f64>() / pnls.len() as f64;
@@ -508,14 +574,14 @@ pub fn rank(
         }
         let breakeven_p_t1 = breakeven(ev_if_t1, ev_if_not);
         let scen = |price: f64, day: f64| {
-            (exit_value(&Exit { day: day.round() as usize, price, frac: 1.0 }) - net_at_entry) * 100.0 - friction
+            (exit_value(&Exit { day: day.round() as usize, price, frac: 1.0 }) - model_entry) * 100.0 - friction
         };
         let half_t1 = (setup.days_to_t1 / 2.0).max(1.0);
         let t_now = |i: usize| bs::years_to_expiry(contracts[i].expiry, now);
         let (mut delta, mut theta, mut vega) = (0.0, 0.0, 0.0);
         for &(i, sd, q) in &cand.legs {
             let c = contracts[i];
-            let g = bs::greeks(c.right, entry, c.strike, t_now(i), r, 0.0, c.iv);
+            let g = bs::greeks(c.right, entry, c.strike, t_now(i), r, 0.0, ivs[i]);
             delta += sign(sd) * qty(q) * g.delta * 100.0;
             theta += sign(sd) * qty(q) * g.theta * 100.0;
             vega += sign(sd) * qty(q) * g.vega * 100.0;
@@ -534,7 +600,7 @@ pub fn rank(
                     bid: c.bid,
                     ask: c.ask,
                     mid: c.mid(),
-                    iv: c.iv,
+                    iv: ivs[i],
                     delta: c.delta,
                     open_interest: c.open_interest,
                     volume: c.volume,
@@ -662,13 +728,16 @@ pub struct HoldEval {
 }
 
 /// Simulate a held position under the plan's management from today's spot (same random paths
-/// and pricing as [`rank`]), capped at the first expiry. `sim_vol` gives the
-/// realized-vol forecast for a horizon in trading days.
+/// and pricing as [`rank`]), capped at the first expiry. `quote_spot` is the underlying price the
+/// option quotes were taken at ([`ChainSnapshot::quote_spot`]): when spot has moved since, that
+/// move has already happened to the position and is not part of what holding adds. `sim_vol`
+/// gives the realized-vol forecast for a horizon in trading days.
 #[allow(clippy::too_many_arguments)]
 pub fn hold_value(
     legs: &[HeldLeg],
     setup: &Setup,
     spot: f64,
+    quote_spot: f64,
     sim_vol: impl Fn(usize) -> f64,
     earnings: Option<Event>,
     now: DateTime<Utc>,
@@ -694,29 +763,39 @@ pub fn hold_value(
     let shocks = shocks(PATHS, plan.hold);
     let (paths, _) = simulate(&plan, &shocks, 0.0, sigma_d);
 
-    let leg_value = |l: &HeldLeg, s: f64, day: usize| -> f64 {
-        let Some(c) = l.contract else { return s };
+    let ivs: Vec<f64> = legs.iter().map(|l| l.contract.map_or(0.0, |c| quoted_iv(c, quote_spot, now, r))).collect();
+    let leg_value = |k: usize, s: f64, day: usize| -> f64 {
+        let Some(c) = legs[k].contract else { return s };
         let date = trading_to_date(today, day as f64);
         let ts = if day == 0 { now } else { at_close(date) };
         let iv = match earnings {
-            Some(e) if date > e.date && c.expiry > e.date && today <= e.date => e.iv_after(c.iv, c.expiry, now),
-            _ => c.iv,
+            Some(e) if date > e.date && c.expiry > e.date && today <= e.date => e.iv_after(ivs[k], c.expiry, now),
+            _ => ivs[k],
         };
         let t = (at_close(c.expiry) - ts).num_seconds() as f64 / (365.0 * 86_400.0);
         bs::value(c.right, s, c.strike, t, r, iv)
     };
-    let value_now: f64 = legs.iter().map(|l| l.units * l.contract.map_or(spot, |c| c.mid())).sum();
-    let path_value = |exits: &[Exit]| -> f64 {
-        exits.iter().map(|e| e.frac * legs.iter().map(|l| l.units * leg_value(l, e.price, e.day)).sum::<f64>()).sum()
-    };
-    let changes: Vec<f64> = paths.iter().map(|x| path_value(x) - value_now).collect();
+    let model = |s: f64, day: usize| -> f64 { (0..legs.len()).map(|k| legs[k].units * leg_value(k, s, day)).sum() };
+    // The model's value at today's spot is what closing now is compared against. The reported
+    // value is each quoted mid carried from the quotes' price to spot by the model (the model
+    // value itself where there is no two-sided quote).
+    let model_now = model(spot, 0);
+    let value_now: f64 = (0..legs.len())
+        .map(|k| {
+            let at_spot = leg_value(k, spot, 0);
+            let quoted = legs[k].contract.filter(|c| two_sided(c)).map(|c| c.mid() - leg_value(k, quote_spot, 0));
+            legs[k].units * (at_spot + quoted.unwrap_or(0.0))
+        })
+        .sum();
+    let path_value = |exits: &[Exit]| -> f64 { exits.iter().map(|e| e.frac * model(e.price, e.day)).sum() };
+    let changes: Vec<f64> = paths.iter().map(|x| path_value(x) - model_now).collect();
     let ev_no_edge = changes.iter().sum::<f64>() / changes.len() as f64;
     let mut theta_day = 0.0;
     let mut close_friction = 0.0;
-    for l in legs {
+    for (l, &iv) in legs.iter().zip(&ivs) {
         if let Some(c) = l.contract {
             theta_day +=
-                l.units * bs::greeks(c.right, spot, c.strike, bs::years_to_expiry(c.expiry, now), r, 0.0, c.iv).theta;
+                l.units * bs::greeks(c.right, spot, c.strike, bs::years_to_expiry(c.expiry, now), r, 0.0, iv).theta;
             close_friction += l.units.abs() * (c.ask - c.bid) / 2.0 + (l.units.abs() / 100.0) * commission;
         }
     }
@@ -953,6 +1032,7 @@ mod tests {
             &[HeldLeg { contract: Some(&rich), units: 100.0 }],
             &setup,
             100.0,
+            100.0,
             |_| 0.3,
             None,
             now,
@@ -965,6 +1045,7 @@ mod tests {
         let h = hold_value(
             &[HeldLeg { contract: Some(&cheap), units: 100.0 }],
             &setup,
+            100.0,
             100.0,
             |_| 0.4,
             None,
@@ -982,5 +1063,217 @@ mod tests {
         let m = v.iter().sum::<f64>() / v.len() as f64;
         let s = (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / v.len() as f64).sqrt();
         assert!(m.abs() < 0.03 && (s - 1.0).abs() < 0.03, "{m} {s}");
+    }
+}
+
+/// What the simulation must get right whatever the plan: a fairly priced contract needs no edge,
+/// and nothing but the plan and the prices paid moves the result.
+#[cfg(test)]
+mod consistency {
+    use super::super::setup::{Backtest, Direction, Outcomes, PlanLevel, Setup, SetupKind, Status};
+    use super::*;
+    use crate::analytics::market::{Freshness, Session};
+
+    fn setup(dir: Direction, sl: f64, t1: f64, t2: f64) -> Setup {
+        let lvl = |p: f64| PlanLevel { price: p, basis: String::new(), zone: None };
+        let bt = Backtest {
+            signals: Outcomes::default(),
+            first_signal: None,
+            last_signal: None,
+            no_edge_p_t1: 0.33,
+            trend_only: Outcomes::default(),
+            any_day: Outcomes::default(),
+            effective_n: 0.0,
+            hold_days: 30,
+            through_earnings: Outcomes::default(),
+            without_earnings: Outcomes::default(),
+        };
+        Setup {
+            kind: SetupKind::TrendNow,
+            direction: dir,
+            status: Status::Enter,
+            name: String::new(),
+            trigger: String::new(),
+            b1: lvl(100.0),
+            b2: None,
+            sl: lvl(sl),
+            t1: lvl(t1),
+            t2: lvl(t2),
+            avg_entry: 100.0,
+            risk_per_share: (100.0 - sl).abs(),
+            rr_t1: 2.0,
+            rr_t2: 4.0,
+            p_t1_random: 0.33,
+            obstacles: vec![],
+            backtest: bt,
+            days_to_t1: 10.0,
+            days_to_t2: 20.0,
+            why: vec![],
+            why_not_now: vec![],
+            alerts: vec![],
+        }
+    }
+    fn long() -> Setup {
+        setup(Direction::Long, 95.0, 110.0, 120.0)
+    }
+    fn short() -> Setup {
+        setup(Direction::Short, 105.0, 90.0, 80.0)
+    }
+    fn now() -> DateTime<Utc> {
+        at_close(NaiveDate::from_ymd_opt(2026, 1, 5).unwrap())
+    }
+    fn expiry() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 3, 20).unwrap()
+    }
+
+    /// Strikes 60–140 whose quotes are exact model prices at `quoted_at` and 40% IV (no interest),
+    /// while the provider's IV field says `iv_field`.
+    fn chain(quoted_at: f64, iv_field: f64) -> ChainSnapshot {
+        let t = bs::years_to_expiry(expiry(), now());
+        let mut contracts = Vec::new();
+        for i in 0..=32 {
+            let k = 60.0 + 2.5 * i as f64;
+            for right in [Right::Call, Right::Put] {
+                let px = bs::greeks(right, quoted_at, k, t, 0.0, 0.0, 0.40).price;
+                contracts.push(OptionContract {
+                    symbol: format!("X{k}{right:?}"),
+                    root: "X".into(),
+                    prev_close: 0.0,
+                    expiry: expiry(),
+                    strike: k,
+                    right,
+                    bid: px,
+                    ask: px,
+                    last: px,
+                    volume: 0.0,
+                    open_interest: 1000.0,
+                    iv: iv_field,
+                    delta: 0.5,
+                    gamma: 0.0,
+                    theta: 0.0,
+                    vega: 0.0,
+                });
+            }
+        }
+        ChainSnapshot {
+            underlying: "X".into(),
+            spot: quoted_at,
+            prev_close: quoted_at,
+            iv30: None,
+            as_of: 0,
+            source: String::new(),
+            delayed: true,
+            freshness: Freshness { session: Session::Closed, quotes_stale: false, quotes_as_of: 0, spot_as_of: 0 },
+            regular_close: None,
+            contracts,
+        }
+    }
+
+    /// Every structure, at 40% realized vol, no interest and no costs.
+    fn picks(setup: &Setup, chain: &ChainSnapshot, spot: f64) -> ContractsReport {
+        let p = ContractParams { limit: 400, min_oi: 1.0, max_spread: 1.0, max_risk: None, commission: 0.0 };
+        rank(chain, setup, spot, 0.40, None, &p, now(), 0.0, &Default::default())
+    }
+
+    /// Expected result within 1.5% of the risk, and where the result turns on T1 against the stop,
+    /// within two points of edge. (The broken versions of these cases were off by 6 to 12 points.)
+    /// Simulation noise is about a point; structures whose result barely depends on which level
+    /// comes first (butterflies, credit spreads) turn a dollar of it into a point of edge.
+    fn assert_no_edge(rep: &ContractsReport) {
+        assert!(rep.picks.len() >= 6, "{} picks", rep.picks.len());
+        for p in &rep.picks {
+            let turns_on_t1 = p.ev_if_t1 - p.ev_if_not > 0.5 * p.max_loss;
+            assert!(
+                p.ev_no_edge.abs() < 0.015 * p.max_loss.max(100.0) && (!turns_on_t1 || p.edge_needed.abs() < 0.02),
+                "{} {:?}: {:+.1} expected on {:.0} risked, edge {:+.2}pt",
+                p.structure.label(),
+                p.legs.iter().map(|l| l.strike).collect::<Vec<_>>(),
+                p.ev_no_edge,
+                p.max_loss,
+                p.edge_needed * 100.0
+            );
+        }
+    }
+
+    #[test]
+    fn a_fairly_priced_chain_needs_no_edge() {
+        assert_no_edge(&picks(&long(), &chain(100.0, 0.40), 100.0));
+        assert_no_edge(&picks(&short(), &chain(100.0, 0.40), 100.0));
+    }
+
+    #[test]
+    fn the_providers_iv_does_not_move_the_result() {
+        // Quotes are worth 40% IV whatever the provider's own IV field says.
+        assert_no_edge(&picks(&long(), &chain(100.0, 0.43), 100.0));
+        assert_no_edge(&picks(&short(), &chain(100.0, 0.36), 100.0));
+    }
+
+    #[test]
+    fn a_move_since_the_quotes_is_not_edge() {
+        // Quotes from the close at 100; spot is 102 before the open.
+        let mut stale = chain(100.0, 0.40);
+        stale.freshness.quotes_stale = true;
+        stale.regular_close = Some(100.0);
+        stale.spot = 101.0;
+        let rep = picks(&long(), &stale, 102.0);
+        assert_no_edge(&rep);
+        // And the entry is priced as it would be quoted with the underlying at 102.
+        let fresh = picks(&long(), &chain(102.0, 0.40), 102.0);
+        for (a, b) in rep.picks.iter().zip(&fresh.picks) {
+            assert_eq!(a.legs[0].symbol, b.legs[0].symbol);
+            assert!((a.net_at_entry - b.net_at_entry).abs() < 0.01, "{} vs {}", a.net_at_entry, b.net_at_entry);
+        }
+    }
+
+    #[test]
+    fn the_stock_itself_averages_nothing_through_a_report() {
+        for d in [1.0, -1.0] {
+            let p = Plan {
+                d,
+                entry: 100.0,
+                sl: 100.0 - 5.0 * d,
+                t1: 100.0 + 10.0 * d,
+                t2: 100.0 + 20.0 * d,
+                hold: 30,
+                jump: Some((5, 0.10)),
+            };
+            let (paths, _) = simulate(&p, &shocks(40_000, p.hold), 0.0, 0.40 / 252f64.sqrt());
+            let pnl = |x: &Vec<Exit>| x.iter().map(|e| e.frac * d * (e.price - 100.0)).sum::<f64>();
+            let mean_r = paths.iter().map(pnl).sum::<f64>() / paths.len() as f64 / 5.0;
+            assert!(mean_r.abs() < 0.03, "{mean_r:+.3}R");
+            // The gap can end a trade beyond its stop.
+            let worst = paths.iter().map(pnl).fold(f64::MAX, f64::min) / 5.0;
+            assert!(worst < -1.5, "{worst}");
+        }
+    }
+
+    #[test]
+    fn holding_is_not_charged_for_a_move_that_already_happened() {
+        // 100 strike call marked at the close with the stock at 100; the stock is 96 before the open.
+        let mut ch = chain(100.0, 0.43);
+        ch.freshness.quotes_stale = true;
+        ch.regular_close = Some(100.0);
+        let c = ch.contracts.iter().find(|c| c.strike == 100.0 && c.right == Right::Call).unwrap();
+        let s = setup(Direction::Long, 91.0, 106.0, 116.0);
+        let h = hold_value(
+            &[HeldLeg { contract: Some(c), units: 100.0 }],
+            &s,
+            96.0,
+            ch.quote_spot(),
+            |_| 0.40,
+            None,
+            now(),
+            0.0,
+            0.0,
+        );
+        let worth = 100.0 * bs::value(Right::Call, 96.0, 100.0, bs::years_to_expiry(expiry(), now()), 0.0, 0.40);
+        assert!((h.value_now - worth).abs() < 1.0, "{} vs {worth}", h.value_now);
+        assert!(h.ev_no_edge.abs() < 0.02 * worth, "{:+.1} on {worth:.0}", h.ev_no_edge);
+    }
+
+    #[test]
+    fn one_random_hit_rate_per_plan() {
+        let rep = picks(&long(), &chain(100.0, 0.40), 100.0);
+        assert_eq!(random_hit_rate(&long(), 100.0, 0.40, None, now()), rep.p_t1_no_edge);
     }
 }

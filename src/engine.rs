@@ -569,6 +569,7 @@ impl Engine {
                     .earnings_move
                     .as_ref()
                     .map(|m| pick::contracts::Event { date: m.date, sd: m.sim_move_pct.map(|x| x / 100.0) });
+                let quote_spot = chain.as_ref().map_or(spot, |c| c.quote_spot());
                 let (st, chain, positions) = (st.clone(), chain.clone(), positions.clone());
                 let r = self.cfg.risk_free_rate;
                 let commission = self.cfg.costs.commission_per_contract;
@@ -594,6 +595,7 @@ impl Engine {
                             &legs,
                             &st,
                             spot,
+                            quote_spot,
                             |h| pick::sim_vol(&regime, h),
                             earnings,
                             now,

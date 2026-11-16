@@ -235,12 +235,13 @@ pub fn pick(inp: &Input, p: &PickParams) -> anyhow::Result<PickReport> {
     // The user's levels lead; otherwise the plans stay in the order they were built (nearest
     // pullback first). Nothing ranks them: none is assumed to be better than another.
     let trend_brief = reg.trend_signals.iter().map(|(_, t)| t.as_str()).take(4).collect::<Vec<_>>().join(", ");
+    let event =
+        earnings_move.as_ref().map(|m| contracts::Event { date: m.date, sd: m.sim_move_pct.map(|x| x / 100.0) });
     for st in &mut setups {
-        // A driftless price reaches T1 before the stop in proportion to the distances from where
-        // the plan is entered.
-        let d = st.direction.d();
-        let from = if st.status == Status::Enter { spot } else { st.avg_entry };
-        st.p_t1_random = (d * (from - st.sl.price) / (d * (st.t1.price - st.sl.price)).max(1e-9)).clamp(0.0, 1.0);
+        // How often a driftless price reaches T1 before the stop within the plan's time stop, on
+        // the same paths the contracts are priced on. Without a time stop it is the ratio of the
+        // distances; a far target the time stop cuts short comes in well below that.
+        st.p_t1_random = contracts::random_hit_rate(st, spot, sim_vol(&reg, st.backtest.hold_days), event, inp.now);
         let bt = &st.backtest;
         let mut why = vec![format!("trend: {} — {}", reg.trend, trend_brief)];
         if let Some(z) = &st.b1.zone {
@@ -401,9 +402,6 @@ pub fn pick(inp: &Input, p: &PickParams) -> anyhow::Result<PickReport> {
     let contracts = match (inp.chain, setups.first()) {
         (Some(chain), Some(st)) => {
             let sim_vol = sim_vol(&reg, st.backtest.hold_days);
-            let event = earnings_move
-                .as_ref()
-                .map(|m| contracts::Event { date: m.date, sd: m.sim_move_pct.map(|x| x / 100.0) });
             Some(contracts::rank(chain, st, spot, sim_vol, event, &p.contracts, inp.now, inp.r, inp.live))
         }
         _ => None,

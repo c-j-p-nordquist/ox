@@ -31,9 +31,10 @@ stock moves at random, which is the bar the user's own idea has to clear.
   entries), `sl`, `t1`/`t2`, each with `basis` (the level's sources or the rule). `alerts[]` are
   the prices to watch. The levels are conventional places for entries, stops and targets; they
   are not evidence that price will turn there.
-- `p_t1_random` per setup: how often T1 comes before the stop if the stock moves at random, from
-  where the plan is entered (spot when `at_entry`, else the average entry). The plan averages 0R
-  at random before costs.
+- `p_t1_random` per setup: how often T1 comes before the stop within the plan's time stop if the
+  stock moves at random, from where the plan is entered (spot when `at_entry`, else the average
+  entry). It is simulated, and equals the contracts' `p_t1_no_edge` for the leading plan. The plan
+  averages 0R at random before costs.
 - `backtest` per setup is description, not proof: `signals` (the plan replayed at past signals), `any_day`
   (the same plan entered on any day: the stock's drift), `trend_only`, `effective_n`. Do not call
   a positive `signals.expectancy_r` an edge.

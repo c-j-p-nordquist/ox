@@ -163,6 +163,12 @@ impl ChainSnapshot {
         v.dedup();
         v
     }
+
+    /// Underlying price the option quotes were taken at: the last regular close while the quotes
+    /// are from that close (spot is then pre- or post-market), else the chain's own spot.
+    pub fn quote_spot(&self) -> f64 {
+        self.regular_close.filter(|c| self.freshness.quotes_stale && *c > 0.0).unwrap_or(self.spot)
+    }
 }
 
 /// Parse an OCC option symbol (`ROOT` + `YYMMDD` + `C|P` + strike*1000 as 8 digits).
